@@ -610,8 +610,8 @@ class Navigator:
                 d, how = door_distance(ps1, plate) if plate else (None, "글자 상자 없음")
                 rec_t = self.mem.plates.get((self.mem.seg, target), {})
                 if mode == "situ" and rec_t.get("dist") is not None:  # 깊이로 잰 문패까지 거리 (문 상자가 없어도 됨)
-                    dd = rec_t["dist"]
-                    d, how = (dd, "깊이") if d is None or dd > 2.0 else (min(d, dd), "문 높이·깊이")
+                    dd = rec_t["dist"]  # 문패는 문 위쪽 벽에 있어 깊이 거리가 조금 길게 나옴 → 둘 중 짧은 쪽
+                    d, how = (dd, "깊이") if d is None else (min(d, dd), "문 높이·깊이")
                 side = SIDE(plate["cx"]) if plate else ""
                 if d is not None and d <= 2.0:
                     say.append(f"도착했습니다. {side}의 문이 {target}호입니다.")

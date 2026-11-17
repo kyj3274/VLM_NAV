@@ -88,7 +88,7 @@ class Memory:
         if not p["ok"] and p["trust"] >= CONFIRM:
             p["ok"], p["ok_t"] = True, t
             why = [f"{p['n']}번 읽음"] + (["크고 또렷함"] if p["big"] else []) + (["문 옆"] if p["door"] else []) + (["본 번호와 가까움"] if p["near"] else [])
-            self.event(t, f"{room}호 문패 확정 ({p['side']}, {', '.join(why)})")
+            self.event(t, f"{room}호 문패 확정 ({p['side'] or '벽 미정'}, {', '.join(why)})")
         return p
 
     def direction(self, target, since=-1):
