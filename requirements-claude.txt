@@ -1,0 +1,10 @@
+# 브랜치 claude: Claude 인식(게이트웨이)만 쓴다. torch·ultralytics·paddle은 설치하지 않는다.
+anthropic==2.9.0
+opencv-python==5.0.0.93
+pillow==13.0.0
+numpy==2.5.5
+fastapi==0.163.1
+uvicorn==0.54.0
+python-multipart==0.0.34
+httpx==0.28.1
+pytest==9.2.0
