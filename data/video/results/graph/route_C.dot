@@ -1,0 +1,29 @@
+digraph G {
+graph [rankdir=LR, fontname="Apple SD Gothic Neo", labelloc=t, label="목적지 318호 → 뒤쪽"];
+node [fontname="Apple SD Gothic Neo", fontsize=11]; edge [fontname="Apple SD Gothic Neo", fontsize=9];
+S0 [shape=box, style="rounded,filled", fillcolor="#e8eefb", label="S0 출발 구간\n0~27초\n모름 14, 엘리베이터 13"];
+S1 [shape=box, style="rounded,filled", fillcolor="#e8eefb", label="S1 하차 후 구간\n28~55초\n복도 18, 엘리베이터 9"];
+P0 [shape=ellipse, style=filled, fillcolor="#f1f1f1", label="314\n미확정 · 왼쪽\n문 옆\n약 1.8m까지 봄\n1번 읽음"];
+P0 -> S0 [style=dotted, color="#999999"];
+P1 [shape=ellipse, style=filled, fillcolor="#f1f1f1", label="157\n미확정 · 왼쪽\n문 옆\n약 6.6m까지 봄\n1번 읽음"];
+P1 -> S1 [style=dotted, color="#999999"];
+P2 [shape=ellipse, style=filled, fillcolor="#fff4d6", label="317\n흐름에만 사용 · 왼쪽\n문 옆\n약 5.9m까지 봄\n1번 읽음"];
+P3 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="316\n문패 · 왼쪽\n문 옆\n약 6.3m까지 봄\n3번 읽음"];
+P4 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="309\n문패 · 오른쪽\n문 옆\n약 4.1m까지 봄\n3번 읽음"];
+P5 [shape=ellipse, style=filled, fillcolor="#f1f1f1", label="209\n미확정 · 오른쪽\n문 옆\n약 3.9m까지 봄\n1번 읽음"];
+P5 -> S1 [style=dotted, color="#999999"];
+P6 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="315\n문패 · 왼쪽\n문 옆\n약 5.4m까지 봄\n3번 읽음"];
+P7 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="307\n문패 · 오른쪽\n문 옆\n약 3.8m까지 봄\n8번 읽음"];
+P8 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="313\n문패 · 왼쪽\n문 옆\n약 4.7m까지 봄\n3번 읽음"];
+S0 -> S1 [label="엘리베이터로 이동", style=solid];
+P2 -> S1 [label="왼쪽 벽", style=solid];
+P3 -> S1 [label="왼쪽 벽", style=solid];
+P4 -> S1 [label="오른쪽 벽", style=solid];
+P6 -> S1 [label="왼쪽 벽", style=solid];
+P7 -> S1 [label="오른쪽 벽", style=solid];
+P8 -> S1 [label="왼쪽 벽", style=solid];
+P2 -> P3 [label="다음 (-1)", style=bold];
+P3 -> P6 [label="다음 (-1)", style=bold];
+P6 -> P8 [label="다음 (-2)", style=bold];
+P4 -> P7 [label="다음 (-2)", style=bold];
+}

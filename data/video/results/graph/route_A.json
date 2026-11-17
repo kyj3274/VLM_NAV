@@ -44,8 +44,16 @@
    "on_map": false,
    "first": 23,
    "last": 23,
+   "best": 0.5,
+   "side_votes": [
+    "왼쪽"
+   ],
+   "dist": [
+    1.8
+   ],
    "ok": false,
-   "side": "오른쪽",
+   "side": "왼쪽",
+   "side_sure": true,
    "kind": "미확정"
   },
   "1:157": {
@@ -65,8 +73,16 @@
    "on_map": false,
    "first": 32,
    "last": 32,
+   "best": 0.77,
+   "side_votes": [
+    "왼쪽"
+   ],
+   "dist": [
+    6.6
+   ],
    "ok": false,
    "side": "왼쪽",
+   "side_sure": true,
    "kind": "미확정"
   },
   "1:317": {
@@ -86,9 +102,17 @@
    "on_map": false,
    "first": 33,
    "last": 33,
+   "best": 1.0,
+   "side_votes": [
+    "왼쪽"
+   ],
+   "dist": [
+    5.9
+   ],
    "ok": false,
    "side": "왼쪽",
-   "kind": "미확정"
+   "side_sure": true,
+   "kind": "흐름에만 사용"
   },
   "1:316": {
    "id": "P3",
@@ -109,8 +133,20 @@
    "on_map": false,
    "first": 34,
    "last": 36,
+   "best": 0.96,
+   "side_votes": [
+    "왼쪽",
+    "왼쪽",
+    "왼쪽"
+   ],
+   "dist": [
+    9.1,
+    8.2,
+    6.3
+   ],
    "ok": true,
    "side": "왼쪽",
+   "side_sure": true,
    "kind": "문패"
   },
   "1:309": {
@@ -132,8 +168,20 @@
    "on_map": false,
    "first": 35,
    "last": 38,
+   "best": 1.0,
+   "side_votes": [
+    "오른쪽",
+    "오른쪽",
+    "오른쪽"
+   ],
+   "dist": [
+    7.3,
+    5.0,
+    4.1
+   ],
    "ok": true,
    "side": "오른쪽",
+   "side_sure": true,
    "kind": "문패"
   },
   "1:209": {
@@ -153,8 +201,16 @@
    "on_map": false,
    "first": 39,
    "last": 39,
+   "best": 0.69,
+   "side_votes": [
+    "오른쪽"
+   ],
+   "dist": [
+    3.9
+   ],
    "ok": false,
    "side": "오른쪽",
+   "side_sure": true,
    "kind": "미확정"
   },
   "1:315": {
@@ -176,8 +232,20 @@
    "on_map": false,
    "first": 42,
    "last": 44,
+   "best": 0.96,
+   "side_votes": [
+    "왼쪽",
+    "왼쪽",
+    "왼쪽"
+   ],
+   "dist": [
+    7.2,
+    6.1,
+    5.4
+   ],
    "ok": true,
    "side": "왼쪽",
+   "side_sure": true,
    "kind": "문패"
   },
   "1:307": {
@@ -204,8 +272,30 @@
    "on_map": false,
    "first": 48,
    "last": 51,
+   "best": 1.0,
+   "side_votes": [
+    "오른쪽",
+    "오른쪽",
+    "오른쪽",
+    "오른쪽",
+    "오른쪽",
+    "오른쪽",
+    "오른쪽",
+    "오른쪽"
+   ],
+   "dist": [
+    6.1,
+    6.0,
+    5.2,
+    5.1,
+    5.2,
+    5.2,
+    3.8,
+    3.8
+   ],
    "ok": true,
-   "side": "왼쪽",
+   "side": "오른쪽",
+   "side_sure": true,
    "kind": "문패"
   },
   "1:313": {
@@ -227,8 +317,20 @@
    "on_map": false,
    "first": 53,
    "last": 55,
+   "best": 1.0,
+   "side_votes": [
+    "왼쪽",
+    "왼쪽",
+    "왼쪽"
+   ],
+   "dist": [
+    6.0,
+    5.3,
+    4.7
+   ],
    "ok": true,
    "side": "왼쪽",
+   "side_sure": true,
    "kind": "문패"
   }
  },
@@ -239,6 +341,16 @@
    "from": "S0",
    "to": "S1",
    "rel": "엘리베이터로 이동"
+  },
+  {
+   "from": "P2",
+   "to": "S1",
+   "rel": "왼쪽 벽"
+  },
+  {
+   "from": "P2",
+   "to": "문",
+   "rel": "문 옆"
   },
   {
    "from": "P3",
@@ -273,7 +385,7 @@
   {
    "from": "P7",
    "to": "S1",
-   "rel": "왼쪽 벽"
+   "rel": "오른쪽 벽"
   },
   {
    "from": "P7",
@@ -291,42 +403,45 @@
    "rel": "문 옆"
   },
   {
+   "from": "P2",
+   "to": "P3",
+   "rel": "다음 (-1)"
+  },
+  {
    "from": "P3",
    "to": "P6",
    "rel": "다음 (-1)"
   },
   {
    "from": "P6",
-   "to": "P7",
-   "rel": "다음 (-8)"
+   "to": "P8",
+   "rel": "다음 (-2)"
   },
   {
-   "from": "P7",
-   "to": "P8",
-   "rel": "다음 (+6)"
+   "from": "P4",
+   "to": "P7",
+   "rel": "다음 (-2)"
   }
  ],
  "trend": {
-  "S1:감소": 2,
-  "S1:증가": 1
+  "S1:감소": 4
  },
  "walls": {
   "S1:왼쪽": [
+   "317",
    "316",
    "315",
-   "307",
    "313"
   ],
   "S1:오른쪽": [
-   "309"
+   "309",
+   "307"
   ]
  },
  "conclusion": {
   "floor": "3",
-  "direction": "뒤쪽",
+  "direction": "근처",
   "flow": "감소",
-  "support": 2,
-  "against": 1,
-  "why": "벽별로 앞으로 갈수록 번호 감소 (근거 2쌍, 반대 1쌍), 마지막 문패 313"
+  "why": "왼쪽 벽 317 → 316 → 315 → 313, 마지막 313과 목적지 차이 1"
  }
 }

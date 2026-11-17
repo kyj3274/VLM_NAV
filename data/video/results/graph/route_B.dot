@@ -1,0 +1,17 @@
+digraph G {
+graph [rankdir=LR, fontname="Apple SD Gothic Neo", labelloc=t, label="목적지 314호 → 다른 층"];
+node [fontname="Apple SD Gothic Neo", fontsize=11]; edge [fontname="Apple SD Gothic Neo", fontsize=9];
+S0 [shape=box, style="rounded,filled", fillcolor="#e8eefb", label="S0 출발 구간\n0~31초\n모름 14, 복도 14"];
+P0 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="410\n문패 · 왼쪽\n문 옆\n약 5.4m까지 봄\n3번 읽음"];
+P1 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="407\n문패 · 오른쪽\n문 옆\n약 3.1m까지 봄\n2번 읽음"];
+P2 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="412\n문패 · 왼쪽\n문 옆\n약 4.5m까지 봄\n2번 읽음"];
+P3 [shape=ellipse, style=filled, fillcolor="#f1f1f1", label="411\n미확정 · 왼쪽\n문 옆\n약 9.0m까지 봄\n1번 읽음"];
+P3 -> S0 [style=dotted, color="#999999"];
+P4 [shape=ellipse, style=filled, fillcolor="#e3f3e7", label="413\n문패 · 왼쪽\n문 옆\n약 4.3m까지 봄\n4번 읽음"];
+P0 -> S0 [label="왼쪽 벽", style=solid];
+P1 -> S0 [label="오른쪽 벽", style=solid];
+P2 -> S0 [label="왼쪽 벽", style=solid];
+P4 -> S0 [label="왼쪽 벽", style=solid];
+P0 -> P2 [label="다음 (+2)", style=bold];
+P2 -> P4 [label="다음 (+1)", style=bold];
+}
