@@ -1,71 +1,102 @@
-# src: 실내 길안내
+# 소스 코드
 
-시각장애인용 실내 길안내. 휴대폰 웹이 1초마다 사진을 서버로 보내고, 서버가 YOLOE·OCR·Places365와 규칙으로 안내 문장을 만들어 돌려준다. VLM(qwen3-vl 4B)은 층 충돌처럼 드문 사건 때만 부른다.
-
-## 폴더
+길안내 서비스와 보조 도구의 소스 코드입니다. 전체 개요는 [저장소 README](../README.md)를 참고하세요.
 
 ```
 src/
-  nav/      서비스: 시연 웹이 실제로 쓰는 코드 (여기서 실행)
-  tools/    도구: 시연 기록 다시 돌리기, GPU 잠금
-  eval/     진행 중인 평가: 텍스트 모델 추론 (판단 지점 17개)
+├── nav/      길안내 서비스 (실행 위치)
+├── tools/    운영 도구
+└── eval/     평가 스크립트
 ```
 
-지난 실험 스크립트는 작업 폴더에서 뺐다. 무엇을 했고 어떻게 다시 꺼내는지는 `docs/16_2026-11-17_보관한_실험_목록.md`.
+---
 
-## nav/ 서비스
+## `nav/` 길안내 서비스
 
-| 파일 | 하는 일 |
+서비스 모듈은 서로를 모듈 이름으로 불러오므로 `nav/` 폴더에서 실행합니다.
+
+### 웹
+
+| 파일 | 역할 |
 |---|---|
-| `web_mac.sh` | **Mac에서 실행.** 서버 웹 켜기·끄기, https 주소, 기록 보기 (`start`, `stop`, `status`, `records`, `record`) |
-| `web_server.py` | 서버 웹. 휴대폰 사진을 받아 `navigator`로 넘기고 안내 문장을 돌려줌. 시연마다 `web_sessions/<시각>_<목적지>/`에 사진·`log.jsonl`·`memory.json` 저장 |
-| `web/index.html` | 휴대폰 화면. 촬영(12장 중 선명한 1장), 말하기(목적지·명령 음성 입력), 안내 음성 |
-| `web_replay.py` | 시연 기록을 다시보기 HTML로 |
-| `navigator.py` | 길안내 본체. `Runner`(인식 실행), `Navigator`(1초마다 상태 갱신과 안내 문장). 영상 경로로도 실행 가능 |
-| `nav_memory.py` | 시간 순서 기억: 문패 믿음 점수(읽힌 횟수·크기·문 옆·가까운 번호), 장소 흐름, 사건 기록 |
-| `perception.py` | YOLOE 물체 인식과 1단계 합치기(rooms, floors, landmarks …) |
-| `ocr_reader.py` | PaddleOCR 불러오기·읽기 (한국어 mobile 모델, 긴 변 2048) |
-| `room_rules.py` | OCR 글자에서 호실 번호 고르기 (첫 자리 다수결 등) |
-| `scene_places.py` | Places365 장소 분류 (엘리베이터 문 판단에 씀) |
-| `vlm_client.py` | 1단계 실행 묶음(`stage1`), 인식 요약 글(`hints`), VLM 호출(`ask`) |
+| `web_mac.sh` | Mac에서 실행하는 제어 스크립트. 서버 웹 실행·종료, 포트 연결, 휴대폰용 https 주소 발급, 시연 기록 조회 |
+| `web_server.py` | 서버 웹. 휴대폰 사진을 받아 `navigator`에 넘기고 안내 문장을 반환. 시연마다 사진, `log.jsonl`, `memory.json`을 저장 |
+| `web/index.html` | 휴대폰 화면. 촬영(1초 12장 중 선명한 1장), 음성 입력(목적지·명령), 음성 안내 |
+| `web_replay.py` | 시연 기록을 다시보기 HTML로 변환 |
 
-서비스 모듈끼리 이름으로 서로 부르므로 `nav/` 안에서 실행한다.
+`web_mac.sh` 명령:
 
-```bash
-# Mac
-bash src/nav/web_mac.sh start
-# 서버에서 영상 경로로 돌리기
-cd /workspace/capstone/src/kyj/nav
-CUDA_VISIBLE_DEVICES=3 ../.venv/bin/python navigator.py --mode situ --frames <frames_8fps> --out-dir <폴더> --route "314=1_start_졸프_영상3,2b_after_elevator_졸프_영상2"
-```
-
-모델 파일: YOLOE는 서버 `models/`(nav/의 위 폴더) 또는 저장소의 `local_models/`(Mac), Places365는 `models/places365/` 또는 `local_models/places365/`.
-
-## tools/
-
-| 파일 | 하는 일 |
+| 명령 | 동작 |
 |---|---|
-| `replay_sessions.py` | 시연 기록의 사진을 지금 코드에 그대로 다시 넣어 안내가 어떻게 달라지는지 확인 (서버) |
-| `gpu_lock.sh` | GPU 동시 사용 막기 |
+| `start` | 서버 웹 실행 → Mac 포트 연결 → https 주소 출력 |
+| `stop` | https 주소와 서버 웹 종료 (GPU 반납) |
+| `status` | 실행 상태 확인 |
+| `records` | 최근 시연 기록 목록 |
+| `record [세션]` | 시연 기록을 다시보기 HTML로 열기 |
 
-## eval/
+### 길안내
 
-| 파일 | 하는 일 |
+| 파일 | 역할 |
 |---|---|
-| `memory_snapshots.py` | 영상 경로를 돌리며 걸음마다 기억(사건 기록)을 저장 (서버) → `data/video/results/memory_snapshots.json` |
-| `reason_series.py` | 그 기억을 텍스트 모델에 넣어 판단 지점 17개에서 다음 행동을 맞히는지 채점 (Mac, 모델은 서버 Ollama) |
+| `navigator.py` | 길안내 본체. `Runner`(인식 실행)와 `Navigator`(1초마다 상태 갱신·안내 문장 생성). 녹화 영상으로도 실행 가능 |
+| `nav_memory.py` | 시간 순서 기억. 문패별 믿음 점수, 장소 흐름, 사건 기록 |
 
-## 데이터 (저장소 `data/video/`)
+**문패 믿음 점수** (`nav_memory.py`)
+
+| 근거 | 점수 |
+|---|---|
+| 읽힌 횟수 (최근 6걸음 안) | 회당 +1, 최대 3 |
+| 크고 또렷함 (점수 0.95 이상, 가까운 글자 크기) | +1 |
+| YOLOE 문 상자 옆에 있음 | +1 |
+| 이미 확정한 같은 층 번호와 10 이내 | +1 |
+| **확정 기준** | **3점 이상** |
+
+### 인식
+
+| 파일 | 역할 | 설정 |
+|---|---|---|
+| `perception.py` | YOLOE 물체 인식과 1단계 결과 합치기 (rooms, floors, landmarks, directions) | `yoloe-11l-seg`, 입력 1280, 기준 0.15 |
+| `ocr_reader.py` | PaddleOCR 불러오기와 읽기 | PP-OCRv5 mobile 위치 모델 + 한국어 인식 모델, 긴 변 2048 |
+| `room_rules.py` | OCR 글자에서 호실 번호 고르기 | 첫 자리 다수결 |
+| `scene_places.py` | Places365 장소 분류 | ResNet18, 엘리베이터 문 확률 0.5 이상 2초 연속 |
+| `vlm_client.py` | 1단계 실행 묶음, 인식 결과 요약 글, VLM 호출 | Ollama `qwen3-vl:4b-instruct` |
+
+---
+
+## `tools/` 운영 도구
+
+| 파일 | 역할 |
+|---|---|
+| `replay_sessions.py` | 시연 기록의 사진을 현재 코드로 다시 실행해 안내 변화를 비교 (회귀 확인용) |
+| `gpu_lock.sh` | 같은 GPU에서 실험이 동시에 돌지 않도록 순서 보장 |
+
+## `eval/` 평가
+
+| 파일 | 역할 |
+|---|---|
+| `memory_snapshots.py` | 녹화 영상을 실행하며 걸음마다 기억(사건 기록)을 저장 |
+| `reason_series.py` | 저장한 기억을 텍스트 모델에 넣어 판단 지점 17개에서 다음 행동을 채점 |
+
+---
+
+## 데이터와 모델 위치
 
 | 경로 | 내용 |
 |---|---|
-| `raw/` | 원본 영상 3개 |
-| `frames/`, `frames_8fps/` | 1초 1장, 1초 8장 프레임 |
-| `checkpoints.json` | 판단 지점 17개 정답 |
-| `frame_gt.json` | 프레임 정답표 |
-| `results/` | 실험 결과(jsonl, log, 데모 HTML) |
-| `deliverable/` | 공유용 경로 영상 |
+| `data/video/checkpoints.json` | 판단 지점 17개 정답 |
+| `data/video/frame_gt.json` | 프레임별 정답표 |
+| `data/video/results/` | 실험 결과 (jsonl, log, 데모 HTML) |
+| `data/video/raw/`, `frames/`, `frames_8fps/` | 원본 영상과 프레임 (저장소 미포함) |
+| `local_models/` 또는 서버 `models/` | YOLOE, Places365 가중치 (저장소 미포함) |
 
 ## 서버 경로
 
-서버(학교 공용)에서는 팀이 정한 개인 폴더를 쓴다: 코드 `/workspace/capstone/src/kyj/`, 결과 `/workspace/capstone/outputs/kyj/`. 코드 안의 서버 경로에 `kyj`가 남아 있는 건 이 때문이다(다른 팀원 폴더에 쓰지 않는 규칙). 서버의 `src/kyj/` 안 구조는 이 저장소의 `src/`와 같게 맞춘다(`nav/`, `tools/`, `eval/`).
+공용 GPU 서버에서는 팀이 정한 개인 폴더를 사용합니다.
+
+| 구분 | 경로 |
+|---|---|
+| 코드 | `/workspace/capstone/src/kyj/` (이 저장소의 `src/`와 같은 구조) |
+| 결과 | `/workspace/capstone/outputs/kyj/` |
+| 시연 기록 | `/workspace/capstone/outputs/kyj/web_sessions/<시각>_<목적지>/` |
+
+코드에 남아 있는 서버 경로의 `kyj`는 이 개인 폴더 이름입니다.
