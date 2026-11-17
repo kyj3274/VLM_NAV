@@ -1,10 +1,10 @@
 #!/bin/bash
 # 실내 길안내 웹 켜기/끄기 (Mac에서 실행). 학교 서버의 web_server.py + Mac의 Cloudflare 임시 https 주소.
-#   bash src/kyj/nav/web_mac.sh start    # 서버 웹 켜기 → Mac으로 포트 연결 → https 주소 출력
-#   bash src/kyj/nav/web_mac.sh stop     # https 주소 끄기 + 서버 웹 끄기 (GPU 반납)
-#   bash src/kyj/nav/web_mac.sh status
-#   bash src/kyj/nav/web_mac.sh records           # 지난 안내 기록 목록
-#   bash src/kyj/nav/web_mac.sh record [세션]     # 기록을 웹 모양 다시보기로 만들어 Mac에서 열기 (세션 생략 = 가장 최근)
+#   bash src/nav/web_mac.sh start    # 서버 웹 켜기 → Mac으로 포트 연결 → https 주소 출력
+#   bash src/nav/web_mac.sh stop     # https 주소 끄기 + 서버 웹 끄기 (GPU 반납)
+#   bash src/nav/web_mac.sh status
+#   bash src/nav/web_mac.sh records           # 지난 안내 기록 목록
+#   bash src/nav/web_mac.sh record [세션]     # 기록을 웹 모양 다시보기로 만들어 Mac에서 열기 (세션 생략 = 가장 최근)
 # 학교 서버 비밀번호를 물으면 입력. 웹 비밀번호는 서버 outputs/kyj/nav_web_password.
 # Mac이 잠자기에 들어가면 주소가 끊긴다. 주소는 켤 때마다 바뀐다.
 
@@ -15,9 +15,9 @@ mkdir -p "$STATE"
 REMOTE_LOG=/workspace/capstone/outputs/kyj/nav_web.log
 SESS=/workspace/capstone/outputs/kyj/web_sessions
 RECORDS="$HOME/nav_web_records"
-REMOTE_KYJ=/workspace/capstone/src/kyj
+REMOTE_DIR=/workspace/capstone/src/kyj
 # 서버가 nav/ 구조로 정리됐으면 nav/web_server.py, 아니면 예전 이름(nav_web.py)으로 켬
-REMOTE_START="cd $REMOTE_KYJ && if [ -f nav/web_server.py ]; then cd nav && PY=../.venv/bin/python && APP=web_server.py; else PY=.venv/bin/python && APP=nav_web.py; fi && (nohup env CUDA_VISIBLE_DEVICES=3 \$PY \$APP --port $PORT > $REMOTE_LOG 2>&1 < /dev/null &)"
+REMOTE_START="cd $REMOTE_DIR && if [ -f nav/web_server.py ]; then cd nav && PY=../.venv/bin/python && APP=web_server.py; else PY=.venv/bin/python && APP=nav_web.py; fi && (nohup env CUDA_VISIBLE_DEVICES=3 \$PY \$APP --port $PORT > $REMOTE_LOG 2>&1 < /dev/null &)"
 REMOTE_PID="ps aux | awk '/(nav_web|web_server).py --port $PORT/ && !/awk/ {print \$2}'"
 
 ssh_up() {  # 열어 둔 연결이 살아 있으면 그대로, 죽었으면 새로 연결 (비밀번호는 여기서 한 번만)
@@ -85,7 +85,7 @@ record)
   sid="$2"
   [ -z "$sid" ] && sid=$(ssh -S "$SOCK" -o BatchMode=yes cnu "ls -d $SESS/2*/ | tail -1 | xargs basename")
   [ -z "$sid" ] && { echo "기록이 없습니다"; exit 1; }
-  ssh -S "$SOCK" -o BatchMode=yes cnu "cd $REMOTE_KYJ && if [ -f nav/web_replay.py ]; then cd nav && ../.venv/bin/python web_replay.py $SESS/$sid; else .venv/bin/python web_replay.py $SESS/$sid; fi" || exit 1
+  ssh -S "$SOCK" -o BatchMode=yes cnu "cd $REMOTE_DIR && if [ -f nav/web_replay.py ]; then cd nav && ../.venv/bin/python web_replay.py $SESS/$sid; else .venv/bin/python web_replay.py $SESS/$sid; fi" || exit 1
   mkdir -p "$RECORDS"
   scp -q -o BatchMode=yes -o ControlPath="$SOCK" "cnu:$SESS/$sid/replay.html" "$RECORDS/$sid.html" && echo "Mac: $RECORDS/$sid.html" && open "$RECORDS/$sid.html"
   ;;

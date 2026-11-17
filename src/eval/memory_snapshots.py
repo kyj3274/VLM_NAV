@@ -8,7 +8,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nav"))  # 서비스 모듈 (src/kyj/nav)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nav"))  # 서비스 모듈 (src/nav)
 
 import navigator as vt
 

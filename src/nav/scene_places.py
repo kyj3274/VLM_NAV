@@ -1,9 +1,9 @@
 """사진 한 장 전체가 어떤 장소인지 Places365(ResNet18)로 분류하고 프레임 정답표의 장면과 비교한다 (Mac에서 실행).
 1초에 8장 중 가장 선명한 장(추적기 --key sharp와 같은 방식). 장소 이름 365개를 길안내용 묶음(복도/엘리베이터/로비·입구/계단)으로 합친다.
 
-  .venv/bin/python src/kyj/scene_places.py --out <폴더>
+  .venv/bin/python src/nav/scene_places.py --out <폴더>
 결과: <폴더>/scenes_places.json, 화면에 초마다 상위 3개와 채점
-모델: src/kyj/models/places365/ (서버) 또는 local_models/places365/ (Mac)의 resnet18_places365.pth.tar (places2.csail.mit.edu 공개 모델)
+모델: 서버 models/places365/ (nav/의 위 폴더) 또는 local_models/places365/ (Mac)의 resnet18_places365.pth.tar (places2.csail.mit.edu 공개 모델)
 추적기는 load()와 classify()를 가져다 쓴다 (엘리베이터 문 장면 판단).
 """
 
@@ -20,7 +20,7 @@ import torch
 import torchvision
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[3]  # 저장소 맨 위
+ROOT = next((d for d in Path(__file__).resolve().parents if (d / "data" / "video").is_dir()), Path(__file__).resolve().parents[2])  # 저장소 맨 위
 MODEL = next((d for d in (Path(__file__).resolve().parents[1] / "models" / "places365", ROOT / "local_models" / "places365")
               if (d / "resnet18_places365.pth.tar").is_file()), None)
 VIDEOS = [("졸프_영상3", "1_start_졸프_영상3", "1층"), ("졸프_영상1", "2a_after_elevator_졸프_영상1", "4층"),

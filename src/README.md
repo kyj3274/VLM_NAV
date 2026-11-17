@@ -1,11 +1,11 @@
-# src/kyj: 실내 길안내 (kyj)
+# src: 실내 길안내
 
 시각장애인용 실내 길안내. 휴대폰 웹이 1초마다 사진을 서버로 보내고, 서버가 YOLOE·OCR·Places365와 규칙으로 안내 문장을 만들어 돌려준다. VLM(qwen3-vl 4B)은 층 충돌처럼 드문 사건 때만 부른다.
 
 ## 폴더
 
 ```
-src/kyj/
+src/
   nav/      서비스: 시연 웹이 실제로 쓰는 코드 (여기서 실행)
   tools/    도구: 시연 기록 다시 돌리기, GPU 잠금
   eval/     진행 중인 평가: 텍스트 모델 추론 (판단 지점 17개)
@@ -33,13 +33,13 @@ src/kyj/
 
 ```bash
 # Mac
-bash src/kyj/nav/web_mac.sh start
+bash src/nav/web_mac.sh start
 # 서버에서 영상 경로로 돌리기
 cd /workspace/capstone/src/kyj/nav
 CUDA_VISIBLE_DEVICES=3 ../.venv/bin/python navigator.py --mode situ --frames <frames_8fps> --out-dir <폴더> --route "314=1_start_졸프_영상3,2b_after_elevator_졸프_영상2"
 ```
 
-모델 파일: YOLOE는 `src/kyj/models/`(서버) 또는 저장소의 `local_models/`(Mac), Places365는 `models/places365/` 또는 `local_models/places365/`.
+모델 파일: YOLOE는 서버 `models/`(nav/의 위 폴더) 또는 저장소의 `local_models/`(Mac), Places365는 `models/places365/` 또는 `local_models/places365/`.
 
 ## tools/
 
@@ -65,3 +65,7 @@ CUDA_VISIBLE_DEVICES=3 ../.venv/bin/python navigator.py --mode situ --frames <fr
 | `frame_gt.json` | 프레임 정답표 |
 | `results/` | 실험 결과(jsonl, log, 데모 HTML) |
 | `deliverable/` | 공유용 경로 영상 |
+
+## 서버 경로
+
+서버(학교 공용)에서는 팀이 정한 개인 폴더를 쓴다: 코드 `/workspace/capstone/src/kyj/`, 결과 `/workspace/capstone/outputs/kyj/`. 코드 안의 서버 경로에 `kyj`가 남아 있는 건 이 때문이다(다른 팀원 폴더에 쓰지 않는 규칙). 서버의 `src/kyj/` 안 구조는 이 저장소의 `src/`와 같게 맞춘다(`nav/`, `tools/`, `eval/`).

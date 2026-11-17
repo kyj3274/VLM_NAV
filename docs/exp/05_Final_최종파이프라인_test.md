@@ -1,7 +1,7 @@
 # 05. Final — 최종 파이프라인 한 번에 실행 + test 1회 채점 (2026-10-20)
 
 ## 무엇을 했나
-- `src/kyj/pipeline_final.py` (서버 같은 경로): 실험 A~E에서 고른 설정(m2048 OCR + 첫 자리 다수결 + qwen3-vl D3h 고르기)을 한 프로세스로 묶었다. 실험 코드(`exp_a_ocr.read_all`, `exp_d_vlm.plan/schema_and_prompt/images_for/apply`)를 그대로 불러 써서 동작이 같다.
+- `src/pipeline_final.py` (서버 같은 경로): 실험 A~E에서 고른 설정(m2048 OCR + 첫 자리 다수결 + qwen3-vl D3h 고르기)을 한 프로세스로 묶었다. 실험 코드(`exp_a_ocr.read_all`, `exp_d_vlm.plan/schema_and_prompt/images_for/apply`)를 그대로 불러 써서 동작이 같다.
 - 서버에서 176장 실행: `./gpu_lock.sh 3 ./gpu_lock.sh 7 env CUDA_VISIBLE_DEVICES=3 .venv/bin/python pipeline_final.py --name final_all` (YOLOE·OCR은 GPU 3, VLM은 Ollama 11436/GPU 7, 두 잠금 모두 잡음).
 - 시간은 이번에 사진마다 실제로 잰 값이다(이전 실험 D는 실험 A의 1단계 시간 + VLM 시간을 더한 값).
 - **확인: 176장 모두 결과가 `exp_d_d3h_all.jsonl`과 같다.** (VLM 답까지 같음, temperature 0 / seed 42)

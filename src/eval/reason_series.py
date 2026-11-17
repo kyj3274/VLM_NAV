@@ -3,7 +3,7 @@
   series      사건 기록에서 사실만 (문패 확정, 장소, 엘리베이터 하차) + 지금 장면
   series+say  위 + 지금까지 시스템이 한 안내 문장 (규칙의 판단이 섞여 있음)
 
-  .venv/bin/python src/kyj/eval/reason_series.py --url http://127.0.0.1:11437 --models qwen3:14b --think off
+  .venv/bin/python src/eval/reason_series.py --url http://127.0.0.1:11437 --models qwen3:14b --think off
 """
 
 import argparse
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import requests
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = next(d for d in Path(__file__).resolve().parents if (d / "data" / "video").is_dir())  # 저장소 맨 위
 ACTIONS = ["문 통과", "직진", "왼쪽", "오른쪽", "뒤로 돌기", "엘리베이터 타기", "엘리베이터로 돌아가기",
            "멈추고 둘러보기", "목적지 접근", "도착"]
 SCHEMA = {"type": "object", "properties": {

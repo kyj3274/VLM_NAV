@@ -8,9 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-KYJ = Path(__file__).resolve().parents[1]  # src/kyj
-# YOLOE 가중치 폴더: 서버는 src/kyj/models, Mac은 저장소의 local_models (없으면 src/kyj/models에 내려받음)
-MODEL_DIR = next((d for d in (KYJ / "models", KYJ.parents[1] / "local_models") if (d / "yoloe-11l-seg.pt").is_file()), KYJ / "models")
+BASE = Path(__file__).resolve().parents[1]  # nav/의 위 폴더 (서버의 models/가 여기 있음)
+# YOLOE 가중치 폴더: 서버는 <위 폴더>/models, Mac은 저장소의 local_models (둘 다 없으면 <위 폴더>/models에 내려받음)
+_LOCAL = [d / "local_models" for d in Path(__file__).resolve().parents if (d / "local_models").is_dir()][:1]
+MODEL_DIR = next((d for d in [BASE / "models"] + _LOCAL if (d / "yoloe-11l-seg.pt").is_file()), BASE / "models")
 
 YOLOE_WEIGHTS = "yoloe-11l-seg.pt"
 YOLOE_SIZE = 1280

@@ -22,9 +22,9 @@
   - 참고로 D3을 qwen2.5vl:7b로도 돌렸다.
 - 시간은 사진 1장 기준 1단계(YOLOE+OCR)에 VLM(이미지 줄이기·자르기·인코딩·요청)을 더한 값이다. 1단계처럼 원본 디코딩 시간은 빼고 `decode_seconds`에 따로 기록했다. 모델을 올리는 첫 호출은 시간에서 뺐다.
 - 스크립트
-  - `src/kyj/exp_d_vlm.py`(서버 같은 경로)
-  - `src/kyj/exp_d_analyze.py`: 채점과 호출 통계. `--subset el,ex,rooms`는 더 좁은 호출 조건을 근사로 시뮬레이션한다.
-  - `src/kyj/exp_d_diag_score.py`: 호실 확인 진단
+  - `src/exp_d_vlm.py`(서버 같은 경로)
+  - `src/exp_d_analyze.py`: 채점과 호출 통계. `--subset el,ex,rooms`는 더 좁은 호출 조건을 근사로 시뮬레이션한다.
+  - `src/exp_d_diag_score.py`: 호실 확인 진단
 
 ## dev 결과 (59장)
 | 방식 | 공식 호실 P/R/F1 | 맞/틀/놓 | 가까운 | 보정 P/R/F1 | 랜드마크 F1 | 엘리베이터 P/R/F1 | 화살표 찾음/방향/오탐 (정답 2) | 시간 중앙(초) | 호출 | 호출당 중앙/최대(초) | 판단 불가 (R / E) |
