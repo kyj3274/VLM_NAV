@@ -20,7 +20,8 @@ OUT = ROOT / "outputs/probe"
 
 
 def schema(c):
-    for name, sch in [("see", cp.SEE_SCHEMA), ("see+dest", cp.SEE_DEST_SCHEMA), ("recheck", cp.RECHECK_SCHEMA)]:
+    for name, sch in [("see", cp.SEE_SCHEMA), ("see+dest", cp.SEE_DEST_SCHEMA), ("see2", cp.SEE2_SCHEMA),
+                      ("see2+dest", cp.SEE2_DEST_SCHEMA), ("recheck", cp.RECHECK_SCHEMA)]:
         r = c.call("schema check", [{"type": "text", "text": "ok"}], sch, max_tokens=1, kind="schema")
         print(f"{name:9s} stop={r.stop_reason} err={r.error} in={r.input_tokens} out={r.output_tokens} "
               f"{r.seconds:.2f}s {r.credit:.4f}cr", flush=True)

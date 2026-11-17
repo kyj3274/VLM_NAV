@@ -5,8 +5,8 @@
         화살표, 앞의 출입문. 중요한 문패 1개는 원본에서 잘라 확대해 다시 읽음(recheck).
   판단  규칙. 문패 확정(nav_memory 믿음 점수 3), 층 충돌은 2초 연속, 번호 증감으로 진행 방향, 엘리베이터는 근거가
         2초 연속, 엘리베이터 대기 6초, 하차 직후 4초는 뒤의 엘리베이터 무시, 10초 무안내면 한 번 말함, 시작 위치 파악 5초.
-  문장  상태로 틀에 맞춰 만든다. Claude의 say는 규칙에 할 말이 없을 때(10초 무안내)만 쓰고, 엘리베이터·층·호실·방향
-        지시가 규칙 상태와 맞지 않으면 쓰지 않고 기록만 남김(say_check).
+  문장  상태로 틀에 맞춰 만든다. 10초 동안 할 말이 없으면 지금 행동을 되풀이하는 규칙 문장.
+        (Claude say는 2단계에서 보조로 썼으나 3단계에서 사용자 지시로 스키마에서 뺌)
 VLM_NAV 대비 바뀐 것은 docs/17_2026-11-17_Claude_인식_기준표.md에 표로 정리.
 
 다음 행동 이름(ACTIONS)은 판단 지점 정답표(data/video/checkpoints.json)와 같다. 매 초 기록의 "action"이 지금 유효한 안내의 행동이다.
@@ -61,15 +61,29 @@ def blur(img):
 class Runner:
     """1초 구간 관찰: 가장 선명한 장을 골라 Claude 인식 1번. (VLM_NAV Runner.observe 대신)"""
 
-    def __init__(self, perceiver):
-        self.p = perceiver
+    def __init__(self, perceiver, per_call=1, two_segs=None):
+        self.p, self.per_call = perceiver, per_call
+        self.two_segs = two_segs  # 2장 방식을 쓸 구간 이름 앞부분들 (None이면 모든 구간)
+
+    @staticmethod
+    def sharpest(frames):
+        return frames[0] if len(frames) == 1 else max(frames, key=lambda p: blur(Image.open(p).convert("RGB").reduce(2)))
+
+    def pick(self, frames):
+        """1장: 구간에서 가장 선명한 장. 2장: 앞 절반과 뒤 절반에서 각각 가장 선명한 장(시간 순)."""
+        seg = Path(frames[0]).parent.name
+        two = self.per_call == 2 and (self.two_segs is None or any(seg.startswith(x) for x in self.two_segs))
+        if two and len(frames) >= 2:
+            h = len(frames) // 2
+            return [self.sharpest(frames[:h]), self.sharpest(frames[h:])]
+        return [self.sharpest(frames)]
 
     def observe(self, frames):
         tb = time.perf_counter()
-        key = frames[0] if len(frames) == 1 else max(frames, key=lambda p: blur(Image.open(p).convert("RGB").reduce(2)))
+        keys = self.pick(frames)
         pick = time.perf_counter() - tb
-        r = self.p.see(key)
-        return {"key": key, "pick_seconds": round(pick, 3), **r}
+        r = self.p.see(keys if len(keys) > 1 else keys[0])
+        return {"key": keys[-1], "keys": keys, "pick_seconds": round(pick, 3), **r}
 
     def recheck(self, frame, plate):
         return self.p.recheck(frame, plate)
@@ -84,9 +98,10 @@ class Navigator:
         self.st = {"floor": None, "wrong_floor": False, "arrived": False, "room": None, "floor_rooms": [],
                    "elevator_said": False, "el_run": 0, "el_seen": False, "el_ready": None, "button": None,
                    "pending": None, "fs_last": None, "near_d": [], "trend_said": None, "target_seen": None,
-                   "arr_run": 0, "quiet": 0, "loc": None, "assume1": False, "door_phase": False, "door_gone": 0,
+                   "arr_run": 0, "last_say": 0, "loc": None, "assume1": False, "door_phase": False, "door_gone": 0,
                    "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기"}
-        self.records, self.clock = [], 0
+        self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
+        self.seg_n = 0
         self.mem = nav_memory.Memory(target)
         self.mem.event(0, f"안내 시작 (목적지 {target})")
         self.si, self.sec, self.seq, self.seg_start = 0, 0, "", 0
@@ -94,14 +109,14 @@ class Navigator:
     # ------------------------------------------------------------ 구간
     def new_segment(self, seq=""):
         """구간 시작. 첫 구간이 아니면 엘리베이터를 타고 내린 것으로 본다 (층·위치는 모름으로)."""
-        if self.records or self.sec:
+        if self.records or self.seg_n:
             self.si += 1
             self.mem.new_segment(self.clock)
-        self.seq, self.sec, self.seg_start = seq, 0, self.clock
+        self.seq, self.sec, self.seg_start, self.seg_n = seq, 0, self.clock, 0
         if self.si > 0:
             self.st.update(floor=None, wrong_floor=False, room=None, floor_rooms=[], elevator_said=False, el_run=0,
                            el_seen=False, el_ready=None, button=None, pending=None, fs_last=None, near_d=[],
-                           trend_said=None, target_seen=None, arr_run=0, quiet=0, loc=None, assume1=False,
+                           trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None, assume1=False,
                            door_phase=False, door_gone=0, arrow_last=None, el_approach=False)
 
     # ------------------------------------------------------------ 재확인 대상
@@ -128,36 +143,6 @@ class Navigator:
                 return other[0], "층 충돌 번호"
         return None, None
 
-    # ------------------------------------------------------------ say 검사
-    def check_say(self, s, rooms, obs):
-        """Claude say가 규칙 상태와 맞는지. 맞지 않으면 이유 문자열, 맞으면 None."""
-        st = self.st
-        if not s:
-            return "빈 문장"
-        if st["act"] in ("엘리베이터로 돌아가기", "뒤로 돌기"):
-            return f"규칙 행동({st['act']}) 중에는 설명 문장을 쓰지 않음"
-        if "엘리베이터" in s and not st["el_seen"]:
-            return "엘리베이터 미확인"
-        for f in re.findall(r"(\d+)\s*층", s):
-            if f != st["floor"]:
-                return f"층 {f} ≠ 확인된 층 {st['floor']}"
-        ok_rooms = set(self.mem.confirmed())
-        for n in re.findall(r"\d{3,4}", s):
-            if n not in ok_rooms:
-                return f"미확정 번호 {n}"
-        if ("목적지" in s or self.target in s) and not st["target_seen"]:
-            return "목적지 미확인"
-        arrows = {a.get("to") for a in obs.get("arrows", [])}
-        if re.search(r"(왼쪽|좌측)으로\s*(가|도|꺾|이동|돌)", s) and "L" not in arrows:
-            return "왼쪽 지시 근거 없음"
-        if re.search(r"(오른쪽|우측)으로\s*(가|도|꺾|이동|돌)", s) and "R" not in arrows:
-            return "오른쪽 지시 근거 없음"
-        if re.search(r"뒤로|돌아", s):
-            return "뒤로 지시 근거 없음"
-        if re.search(r"직진|앞으로\s*(가|걸|이동|계속)", s) and st["act"] not in ("직진", "문 통과", "목적지 접근"):
-            return f"규칙 행동({st['act']})과 다름"
-        return None
-
     # ------------------------------------------------------------ 위치 파악 끝
     def locate_end(self, loc):
         st, tf = self.st, self.tf
@@ -179,12 +164,16 @@ class Navigator:
         return ["앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
 
     # ------------------------------------------------------------ 한 걸음
-    def step(self, frames):
-        """frames: 1초 구간의 사진 파일 경로들. 반환: 이 초의 기록."""
+    def step(self, frames=None, t=None, observed=None):
+        """frames: 1초 구간의 사진 파일 경로들 (영상 실행). t: 사진 찍은 시각(초, 겹쳐 보내기·웹),
+        observed: 이미 받은 인식 결과(겹쳐 보내기에서 다른 스레드가 부른 것). 반환: 이 걸음의 기록."""
         st, target, tf = self.st, self.target, self.tf
-        si, sec, clock = self.si, self.sec, self.clock
+        if t is not None:
+            self.clock = t
+        si, clock = self.si, self.clock
+        first = self.seg_n == 0  # 구간(경로 시작·엘리베이터 하차)의 첫 걸음
         say, note = [], {}
-        o = self.runner.observe(frames)
+        o = observed or self.runner.observe(frames)
         calls = [] if o["cached"] else [o["call"]]
         latency = o["pick_seconds"] + (o["call"].get("seconds") or 0)
         note["credit_all"] = o["call"].get("credit") or 0.0  # 캐시에서 온 호출도 포함한 이 초의 크레딧
@@ -193,11 +182,11 @@ class Navigator:
             err = o["call"].get("error")
             if o["call"].get("timed_out"):
                 say.append("잠시 멈춰 주세요.")
-            return self._finish(o, None, [], say, note, latency, calls, error=err, recheck=None, say_check=None)
+            return self._finish(o, None, [], say, note, latency, calls, error=err, recheck=None)
 
         self.mem.place(clock, cp.PLACE_KO.get(obs["place"]))
         loc = st["loc"]
-        if sec == 0 and si == 0:
+        if first and si == 0:
             if obs["door_ahead"] != "none":  # 출입문 앞에서 시작: 문을 지나 들어가는 것이 먼저 (건물 입구 = 1층으로 가정)
                 kind = "유리문" if obs["door_ahead"] == "glass" else "문"
                 say.append(f"{target}호로 안내를 시작합니다." + (f" {target}호는 {tf}층입니다." if tf else "")
@@ -210,12 +199,12 @@ class Navigator:
                 st["act"] = "멈추고 둘러보기"
         if loc is not None:
             loc["places"].append(obs["place"])
-        if sec == 0 and si > 0:
+        if first and si > 0:
             say.append("엘리베이터에서 내렸습니다. 문패를 확인하며 천천히 이동하세요.")
             st["act"] = "직진"
 
         # ---- 출입문을 지났는가
-        if st["door_phase"] and not (sec == 0 and si == 0):
+        if st["door_phase"] and not (first and si == 0):
             st["door_gone"] = st["door_gone"] + 1 if obs["door_ahead"] == "none" else 0
             if st["door_gone"] >= DOOR_GONE:
                 st["door_phase"] = False
@@ -230,7 +219,7 @@ class Navigator:
         rflag, recheck = {}, None
         cand, why = self.recheck_pick(obs)
         if cand:
-            rc = self.runner.recheck(o["key"], cand)
+            rc = self.runner.recheck(cand.get("frame") or o["key"], cand)
             if rc:
                 if not rc["cached"]:
                     calls.append(rc["call"])
@@ -257,7 +246,7 @@ class Navigator:
         st["el_run"] = st["el_run"] + 1 if el["seen"] else 0
         if el["btn"] in ("L", "R"):
             st["button"] = {"L": "왼쪽", "R": "오른쪽"}[el["btn"]]
-        ignore_el = si > 0 and sec < EXIT_IGNORE
+        ignore_el = si > 0 and clock - self.seg_start < EXIT_IGNORE
         if st["el_run"] >= 2 and not ignore_el:
             if not st["el_seen"]:
                 self.mem.event(clock, "엘리베이터 확인 (" + ("호출 버튼" if el["why"] == "button" else "층 표시창") + ")")
@@ -288,23 +277,31 @@ class Navigator:
         other = [x for x in rooms if st["floor"] and ROOM.match(x) and x[0] != st["floor"]]
         if other:
             digit = other[0][0]
-            if st["pending"] and st["pending"][0] == digit and st["pending"][1] == clock - 1:
+            if st["pending"] and st["pending"][0] == digit and st["pending"][1] == self.n - 1:
                 floor_change = digit
-                self.mem.event(clock, f"층 충돌 2초 연속: {st['floor']}층 → {digit}층")
+                self.mem.event(clock, f"층 충돌 2번 연속: {st['floor']}층 → {digit}층")
             else:
-                st["pending"] = (digit, clock)
+                st["pending"] = (digit, self.n)
                 rooms = [x for x in rooms if not ROOM.match(x) or x[0] == st["floor"]]
-        # 층 표지: 같은 층 글자가 2초 연속이면 근거로 씀
+        # 층 표지: 또렷하게 읽힌 층 글자는 한 번으로 층 근거 (사용자 지시 2026-11-18, 전에는 2초 연속).
+        # 이미 정한 층과 다르면 문패와 같은 층 충돌 규칙(2번 연속)
         fs = obs["floor"]
-        fs_ok = fs if fs and st["fs_last"] and st["fs_last"] == (fs, clock - 1) else None
-        st["fs_last"] = (fs, clock) if fs else None
+        fs_ok = None
+        if fs and st["floor"] is None:
+            fs_ok = fs
+        elif fs and fs != st["floor"] and not floor_change:
+            if st["pending"] and st["pending"][0] == fs and st["pending"][1] == self.n - 1:
+                floor_change = fs
+                self.mem.event(clock, f"층 표지 충돌 2번 연속: {st['floor']}층 → {fs}층")
+            else:
+                st["pending"] = (fs, self.n)
 
         # ---- 층 판단과 안내
         floor_rooms = [x for x in rooms if ROOM.match(x)]
         floor, basis = (floor_rooms[0][0], f"{floor_rooms[0]}호") if floor_rooms else (fs_ok, f"층 표지 '{obs['floor_sign']}'") \
             if fs_ok else (None, None)
         if floor_change:
-            floor, basis = floor_change, "층 충돌 2초 연속"
+            floor, basis = floor_change, "층 충돌 2번 연속"
         if floor:
             new = [x for x in floor_rooms if x not in [r for _, r in st["floor_rooms"]]]
             where = ""
@@ -385,14 +382,15 @@ class Navigator:
             tgt = obs["dest"]
         if tgt:
             side, m = tgt["side"], tgt["m"]
-            front = side == "C" and m is not None and m <= ARRIVE_M
-            st["arr_run"] = st["arr_run"] + 1 if front else 0
+            close = m is not None and m <= ARRIVE_M  # 정면이 아니어도 (사진 속 L/C/R은 모두 9~3시 안)
+            st["arr_run"] = st["arr_run"] + 1 if close else 0
             first = st["target_seen"] is None
             prev = st["target_seen"] or {}
             st["target_seen"] = {"t": clock, "side": side, "m": m}
             note.update(target_side=side, target_distance_m=m)
             if st["arr_run"] >= 2:
-                say.append(f"정면에 {target}{'호' if ROOM.match(target) else ''} 문이 있습니다.")
+                where = {"C": "정면에", "L": "왼쪽 앞에", "R": "오른쪽 앞에"}[side]
+                say.append(f"{where} {target}{'호' if ROOM.match(target) else ''} 문이 있습니다.")
                 st["arrived"], st["act"] = True, "도착"
             elif st["arr_run"] == 1:
                 say.append("멈춰 주세요, 확인 중입니다.")
@@ -407,10 +405,10 @@ class Navigator:
         # ---- 화살표 기록 (2초 연속 같은 방향일 때 사건으로)
         arrows = [a.get("to") for a in obs["arrows"]]
         if arrows:
-            if st["arrow_last"] and st["arrow_last"][0] == arrows[0] and st["arrow_last"][1] == clock - 1:
+            if st["arrow_last"] and st["arrow_last"][0] == arrows[0] and st["arrow_last"][1] == self.n - 1:
                 lab = obs["arrows"][0].get("label") or ""
                 self.mem.event(clock, f"화살표 표지 {arrows[0]}" + (f" ({lab})" if lab else ""))
-            st["arrow_last"] = (arrows[0], clock)
+            st["arrow_last"] = (arrows[0], self.n)
 
         # ---- 위치 파악 시간 끝
         if st["loc"] is not None and clock + 1 >= st["loc"]["until"] and not st["arrived"]:
@@ -424,44 +422,45 @@ class Navigator:
                            + (f"호출 버튼은 엘리베이터 문 {st['button']} 벽에 있습니다. " if st["button"] else "")
                            + f"엘리베이터를 타고 {tf}층을 누르세요.")
                 st["elevator_said"], st["act"] = True, "엘리베이터 타기"
-        # ---- 무안내 시간: Claude say(검사 통과) 또는 틀 문장
-        say_check = self.check_say(obs["say"], rooms, obs)
-        st["quiet"] = 0 if say else st["quiet"] + 1
-        if st["loc"] is None and not st["arrived"] and st["quiet"] >= QUIET_SAY and st["el_ready"] is None:
-            # 지금 행동을 되풀이하는 틀 문장이 우선. 그냥 걷는 중일 때만 Claude say(검사 통과)를 씀
+        # ---- 무안내 시간: 지금 행동을 되풀이하는 규칙 문장 (Claude say는 2026-11-18 사용자 지시로 스키마에서 뺌)
+        if say:
+            st["last_say"] = clock
+        elif st["loc"] is None and not st["arrived"] and clock - st["last_say"] >= QUIET_SAY and st["el_ready"] is None:
             seeking = st["wrong_floor"] or (st["floor"] is None and st["assume1"] and tf not in (None, "1"))
             if st["act"] == "뒤로 돌기":
                 say.append("목적지와 멀어지고 있습니다. 뒤로 돌아가세요.")
             elif st["act"] == "엘리베이터로 돌아가기":
                 say.append(f"{target}호는 {tf}층에 있습니다. 엘리베이터로 돌아가 {tf}층을 누르세요.")
-            elif say_check is None:
-                say.append(obs["say"])
-                note["say_from"] = "claude"
             elif st["act"] == "직진" and seeking and not st["elevator_said"]:
                 say.append("엘리베이터를 찾고 있습니다. 천천히 직진하며 주변을 비춰 주세요.")
             elif st["act"] == "직진":
-                say.append("계속 앞으로 천천히 직진해 주세요.")
-            st["quiet"] = 0
-        return self._finish(o, obs, rooms, say, note, latency, calls, error=None, recheck=recheck, say_check=say_check)
+                say.append("계속 앞으로 천천히 가세요.")
+            st["last_say"] = clock
+        return self._finish(o, obs, rooms, say, note, latency, calls, error=None, recheck=recheck)
 
-    def _finish(self, o, obs, rooms, say, note, latency, calls, error, recheck, say_check):
+    def _finish(self, o, obs, rooms, say, note, latency, calls, error, recheck):
         st = self.st
         say[:] = [x.strip() for x in say if x and x.strip()]
         for x in say:
             self.mem.event(self.clock, "안내: " + x)
-        rec = {**note, "route_target": self.target, "seq": self.seq, "sec": self.sec, "t": self.clock,
-               "key_frame": Path(o["key"]).name, "obs": obs, "recheck": recheck, "rooms": rooms,
-               "action": st["act"], "say": say, "say_check": say_check,
+        live = isinstance(self.clock, float)
+        sec = round(self.clock - self.seg_start, 2) if live else self.sec
+        rec = {**note, "route_target": self.target, "seq": self.seq, "sec": sec, "t": self.clock,
+               "key_frame": Path(o["key"]).name, "key_frames": [Path(k).name for k in o.get("keys", [o["key"]])],
+               "obs": obs, "recheck": recheck, "rooms": rooms, "action": st["act"], "say": say,
                "state": json.loads(json.dumps({k: v for k, v in st.items() if k != "floor_rooms"})),
                "claude_calls": len(calls), "cached": o["cached"], "credit": round(sum(c.get("credit") or 0 for c in calls), 5),
                "tokens": {"in": sum(c.get("input_tokens", 0) for c in calls), "out": sum(c.get("output_tokens", 0) for c in calls),
                           "cache_read": sum(c.get("cache_read", 0) for c in calls)},
                "latency_seconds": round(latency, 3), "error": error}
-        print(f"[{self.target}] {self.seq[:2]} {self.sec:02d}s {rec['latency_seconds']:.2f}s {rooms} "
+        print(f"[{self.target}] {self.seq[:2]} {sec:05.1f}s {rec['latency_seconds']:.2f}s {rooms} "
               f"{st['act']} | {' / '.join(say)}" + (f" [오류 {error}]" if error else ""), flush=True)
         self.records.append(rec)
-        self.clock += 1
+        if not live:
+            self.clock += 1
         self.sec += 1
+        self.n += 1
+        self.seg_n += 1
         return rec
 
 
@@ -496,7 +495,10 @@ def main():
     ap.add_argument("--route", action="append", required=True, help="목적지=순서1,순서2 …")
     ap.add_argument("--model", default="claude-haiku-5-5")
     ap.add_argument("--send-side", type=int, default=None, help="Claude에 보낼 사진 긴 변 (기본: 원본)")
-    ap.add_argument("--cache", default=str(ROOT / "outputs/cache/claude.jsonl"))
+    ap.add_argument("--per-call", type=int, default=1, choices=[1, 2], help="1초 구간에서 보낼 사진 수(한 번의 호출)")
+    ap.add_argument("--two-segs", default=None, help="2장 방식을 쓸 구간 앞부분(쉼표). 예: 2a,2b (나머지는 1장)")
+    ap.add_argument("--cache", default=str(ROOT / "outputs/cache/claude_v2.jsonl"),
+                    help="인식 캐시 (2단계 결과는 outputs/cache/claude.jsonl: say 칸이 있던 프롬프트)")
     ap.add_argument("--name", default="claude")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--replay", action="store_true", help="캐시만 씀 (Claude를 부르지 않음, 크레딧 0). 규칙만 바꿨을 때")
@@ -511,7 +513,8 @@ def main():
     else:
         client = GatewayClient(a.model, timeout=a.timeout, ledger=Ledger(a.credit_limit))
     before = None if a.dry_run or a.replay else client.credits_used()
-    runner = Runner(cp.Perceiver(client, send_side=a.send_side, cache_path=None if a.dry_run else a.cache))
+    runner = Runner(cp.Perceiver(client, send_side=a.send_side, cache_path=None if a.dry_run else a.cache), per_call=a.per_call,
+                    two_segs=a.two_segs.split(",") if a.two_segs else None)
     try:
         for spec in a.route:
             target, seqs = spec.split("=")

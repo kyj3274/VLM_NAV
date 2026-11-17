@@ -48,15 +48,19 @@ def claude_nav():
 
 def new(name):
     recs = [json.loads(x) for x in open(ROOT / f"outputs/routes/guide_410_1_2a_{name}.jsonl", encoding="utf-8")]
-    cache = [json.loads(x) for x in open(ROOT / "outputs/cache/claude.jsonl", encoding="utf-8")]
-    frames = {f"{r['seq']}/{r['key_frame']}" for r in recs}
-    credit = sum(c["log"]["credit"] for c in cache if c["key"].split("|")[3] in frames)
-    calls = sum(1 for c in cache if c["key"].split("|")[3] in frames)
+    if all("credit_all" in r for r in recs):  # 캐시에서 온 호출도 포함한 이 경로의 크레딧
+        credit = sum(r["credit_all"] for r in recs)
+        calls = sum(1 + bool(r["recheck"]) for r in recs if r["obs"] is not None)
+    else:  # 2단계 첫 실행 기록: 캐시 파일에서 그 프레임 호출을 더함
+        cache = [json.loads(x) for x in open(ROOT / "outputs/cache/claude.jsonl", encoding="utf-8")]
+        frames = {f"{r['seq']}/{r['key_frame']}" for r in recs}
+        credit = sum(c["log"]["credit"] for c in cache if c["key"].split("|")[3] in frames)
+        calls = sum(1 for c in cache if c["key"].split("|")[3] in frames)
     seen = next((r for r in recs if r["seq"].startswith("2a") and "410" in [p["n"] for p in (r["obs"] or {}).get("plates", [])]), None)
     conf = next((r for r in recs if "410" in r["rooms"]), None)
     arr = next((r for r in recs if r["state"].get("arrived")), None)
     says = [f"{r['seq'][:2]} {r['sec']}s: {s}" for r in recs for s in r["say"] if "410" in s and "안내를 시작" not in s]
-    return {"name": "새 방식 (Claude Haiku 인식 + VLM_NAV 규칙)", "steps": len(recs),
+    return {"name": f"새 방식 {name}", "steps": len(recs),
             "lat": stats([r["latency_seconds"] for r in recs if not r["error"]]), "calls": calls, "credit": credit,
             "first_seen": (f"4층 {seen['sec']}초 (읽음)" if seen else "못 봄") + (f", {conf['sec']}초 확정" if conf else ""),
             "arrived": f"4층 {arr['sec']}초" if arr else "도착 판정 없음", "says": says}
@@ -64,9 +68,9 @@ def new(name):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", default="claude")
+    ap.add_argument("--name", default="claude", help="새 방식 실행 이름들(쉼표)")
     a = ap.parse_args()
-    rows = [vlm_nav(), claude_nav(), new(a.name)]
+    rows = [vlm_nav(), claude_nav()] + [new(n) for n in a.name.split(",")]
     print("| 방식 | 초(장) | 판단 시간 중앙값 | 최대 | 모델 호출 | 크레딧 | 410 처음 | 도착 판정 |\n|---|---|---|---|---|---|---|---|")
     for r in rows:
         med, mx, _ = r["lat"]
@@ -76,7 +80,7 @@ def main():
         print(f"\n[{r['name']}] 410이 들어간 안내")
         for s in r["says"][:8]:
             print("  " + s)
-    out = ROOT / f"outputs/eval/compare_410_{a.name}.json"
+    out = ROOT / f"outputs/eval/compare_410_{a.name.replace(',', '+')}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
 

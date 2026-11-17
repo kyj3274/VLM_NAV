@@ -9,12 +9,12 @@ import navigator as nv  # noqa: E402
 from claude_client import FakeClient  # noqa: E402
 
 
-def O(plates=(), place="corridor", door="none", elev=None, floor_sign="", say="", arrows=(), unread=()):
+def O(plates=(), place="corridor", door="none", elev=None, floor_sign="", arrows=(), unread=()):
     return {"plates": [dict(n=n, name="", side=s, m=m, on=on, box=[40, 30, 60, 40]) for n, s, m, on in plates],
             "unread": [dict(n="", name=nm, side="L", m=5.0, on="door", box=[10, 20, 20, 25]) for nm in unread],
             "floor_sign": floor_sign, "floor": cp.floor_of_sign(floor_sign), "place": place, "door_ahead": door,
             "elev": elev or {"seen": False, "why": "none", "side": "none", "m": None, "btn": "none"},
-            "arrows": list(arrows), "say": say, "fixes": []}
+            "arrows": list(arrows), "fixes": []}
 
 
 EL = {"seen": True, "why": "button", "side": "C", "m": 3.0, "btn": "R"}
@@ -27,7 +27,7 @@ class ScriptRunner:
     def observe(self, frames):
         obs = self.script[min(self.i, len(self.script) - 1)]
         self.i += 1
-        return {"key": "f.jpg", "pick_seconds": 0, "obs": obs, "cached": False,
+        return {"key": "f.jpg", "keys": ["f.jpg"], "pick_seconds": 0, "obs": obs, "cached": False,
                 "call": {"seconds": 1.0, "credit": 0.1, "input_tokens": 1, "output_tokens": 1}}
 
     def recheck(self, frame, plate):
@@ -39,7 +39,7 @@ class ScriptRunner:
 def exited(nav):
     """첫 구간을 지나 엘리베이터에서 내린 상태로 만든다."""
     nav.new_segment("1")
-    nav.sec = 1
+    nav.seg_n = 1
     nav.new_segment("2")
 
 
@@ -65,6 +65,7 @@ def test_route_a_like():
     assert recs[0]["state"]["floor"] == "3" and recs[0]["action"] == "직진"
     assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["멈춰 주세요, 확인 중입니다."]
     assert recs[3]["action"] == "도착" and recs[3]["say"] == ["정면에 314호 문이 있습니다."]
+    assert recs[0]["recheck"]["match"] is True  # 317: 읽기 + 재확인 일치 → 한 번에 확정
 
 
 def test_wrong_floor_after_exit():
@@ -118,16 +119,42 @@ def test_floor_conflict_needs_two_seconds():
     assert recs[5]["state"]["floor"] == "4" and recs[5]["action"] == "엘리베이터로 돌아가기"
 
 
-def test_say_filter_and_quiet():
-    script = [O([("317", "C", 2.0, "door")])] * 2 + [O(say="왼쪽에 엘리베이터가 있습니다.")] * 11 + [O(say="복도가 앞으로 이어집니다.")] * 12
+def test_quiet_repeats_rule_sentence():
+    script = [O([("317", "C", 2.0, "door")])] * 2 + [O()] * 12
     nav = nv.Navigator(ScriptRunner(script), "314")
     exited(nav)
-    recs = run(nav, 25)
-    assert recs[5]["say_check"] == "엘리베이터 미확인"
-    spoken = [r for r in recs if r.get("say_from") == "claude"]
-    assert spoken and spoken[0]["say"] == ["복도가 앞으로 이어집니다."]
-    fallback = [r for r in recs[:13] if "계속 앞으로 천천히 직진해 주세요." in r["say"]]
-    assert fallback  # 엘리베이터를 말한 say는 쓰지 않고 틀 문장
+    recs = run(nav, 14)
+    quiet = [r for r in recs if r["say"] == ["계속 앞으로 천천히 가세요."]]
+    assert quiet and quiet[0]["t"] - recs[0]["t"] == 10
+
+
+def test_floor_sign_one_call():
+    nav = nv.Navigator(ScriptRunner([O(floor_sign="4F")]), "314")
+    exited(nav)
+    r = run(nav, 1)[0]
+    assert r["state"]["floor"] == "4" and r["action"] == "엘리베이터로 돌아가기"
+
+
+def test_arrival_side_within_2m():
+    script = [O([("410", "L", 1.8, "door")])] * 2
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    exited(nav)
+    recs = run(nav, 2)
+    assert recs[0]["say"][-1] == "멈춰 주세요, 확인 중입니다."
+    assert recs[1]["action"] == "도착" and recs[1]["say"] == ["왼쪽 앞에 410호 문이 있습니다."]
+
+
+def test_live_time_clock():
+    """겹쳐 보내기: 걸음 간격 1.5초. 무안내 10초는 시간으로, 층 충돌 2번 연속은 걸음으로."""
+    script = [O([("317", "C", 2.0, "door")])] * 2 + [O()] * 7 + [O([("417", "C", 2.0, "door")])] * 2
+    runner = ScriptRunner(script)
+    nav = nv.Navigator(runner, "314")
+    nav.new_segment("1")
+    nav.step(["f.jpg"], t=0.0)
+    nav.new_segment("2")
+    recs = [nav.step(["f.jpg"], t=1.0 + 1.5 * i) for i in range(11)]
+    assert [r["say"] for r in recs].count(["계속 앞으로 천천히 가세요."]) == 1
+    assert recs[-1]["state"]["floor"] == "4"
 
 
 def test_elevator_needs_evidence_two_seconds():
@@ -142,7 +169,7 @@ def test_clean_side_from_box_and_unread():
                        {"n": "", "name": "강의실3", "side": "L", "m": 8, "on": "door", "box": [10, 20, 15, 23]},
                        {"n": "", "name": "", "side": "L", "m": -1, "on": "wall", "box": []}],
             "floor_sign": "3F", "place": "corridor", "door_ahead": "none",
-            "elev": {"seen": True, "why": "none", "side": "C", "m": 3, "btn": "none"}, "arrows": [], "say": "x"}
+            "elev": {"seen": True, "why": "none", "side": "C", "m": 3, "btn": "none"}, "arrows": []}
     o = cp.clean(data)
     assert o["plates"][0]["side"] == "R" and o["unread"][0]["name"] == "강의실3"
     assert o["floor"] == "3" and o["elev"]["seen"] is False
@@ -154,7 +181,7 @@ def test_perceiver_cache(tmp_path):
     f.parent.mkdir()
     Image.new("RGB", (72, 128)).save(f)
     data = {"plates": [], "floor_sign": "", "place": "corridor", "door_ahead": "none",
-            "elev": {"seen": False, "why": "none", "side": "none", "m": -1, "btn": "none"}, "arrows": [], "say": ""}
+            "elev": {"seen": False, "why": "none", "side": "none", "m": -1, "btn": "none"}, "arrows": []}
     fc = FakeClient(lambda kind, content, n: data, credit=0.1)
     p = cp.Perceiver(fc, cache_path=tmp_path / "c.jsonl")
     assert p.see(f)["cached"] is False
@@ -164,12 +191,11 @@ def test_perceiver_cache(tmp_path):
 
 def test_passed_target_then_neighbor_is_away():
     script = [O([("410", "C", 3.0, "door")])] * 2 + [O([("407", "R", 3.0, "door")])] * 2 + \
-             [O([("412", "L", 3.0, "door")])] * 2 + [O(say="복도가 앞으로 이어집니다.")] * 12
+             [O([("412", "L", 3.0, "door")])] * 2 + [O()] * 12
     nav = nv.Navigator(ScriptRunner(script), "410")
     exited(nav)
     recs = run(nav, 18)
     assert recs[1]["action"] == "목적지 접근"
     assert recs[2]["action"] == "뒤로 돌기"
     assert all(r["action"] == "뒤로 돌기" for r in recs[2:])  # 412(가까워짐)에도 '방향이 맞습니다' 안 함
-    assert not any(r.get("say_from") == "claude" for r in recs)
     assert ["목적지와 멀어지고 있습니다. 뒤로 돌아가세요."] in [r["say"] for r in recs]

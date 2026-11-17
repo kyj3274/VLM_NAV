@@ -4,7 +4,8 @@
   경로·목적지가 달라도 다시 쓸 수 있다(캐시). 호실이 아닌 목적지(화장실 등)는 dest 칸을 더해 따로 묻는다.
 - 중요한 문패(목적지 근처 번호, 층을 처음 정할 번호, 층 충돌 번호)는 원본 해상도에서 잘라 확대한 조각으로
   한 번 더 읽는다(recheck). 8장 OCR 투표 대신 쓴다.
-- 판단·안내 문장은 규칙(navigator)이 만든다. say는 규칙에 할 말이 없을 때만 쓰는 보조 문장이다.
+- 판단·안내 문장은 규칙(navigator)이 만든다. (2단계의 say 칸은 3단계에서 뺌: 출력 토큰 줄이기)
+- 2장 방식: 같은 1초의 앞·뒤 절반에서 고른 2장을 한 번의 호출에 넣고, 문패마다 어느 사진(img)에서 읽었는지 받는다.
 
 출력은 짧은 영문 키로 받는다(출력 토큰을 줄여 응답 시간을 줄이려고).
 """
@@ -33,40 +34,48 @@ def _obj(props, req=None):
 
 _S = {"type": "string"}
 _N = {"type": "number"}
-PLATE = _obj({"n": _S, "name": _S, "side": {"type": "string", "enum": SIDES}, "m": _N,
-              "on": {"type": "string", "enum": ["door", "wall", "board"]},
+# 출력 토큰을 줄이려고 키를 짧게 하고 엘리베이터는 칸 몇 개로 폈다(2026-11-18). 받은 뒤 clean()이 안쪽 형식으로 바꾼다.
+#  문패 side는 box 가운데로 정하므로 묻지 않는다.
+PLATE = _obj({"n": _S, "name": _S, "m": _N, "on": {"type": "string", "enum": ["door", "wall", "board"]},
               "box": {"type": "array", "items": {"type": "integer"}}})
-SEE = {"plates": {"type": "array", "items": PLATE}, "floor_sign": _S,
+SEE = {"plates": {"type": "array", "items": PLATE}, "fs": _S,
        "place": {"type": "string", "enum": PLACES},
-       "door_ahead": {"type": "string", "enum": ["glass", "door", "none"]},
-       "elev": _obj({"seen": {"type": "boolean"}, "why": {"type": "string", "enum": ["button", "display", "none"]},
-                     "side": {"type": "string", "enum": SIDES + ["none"]}, "m": _N,
-                     "btn": {"type": "string", "enum": ["L", "R", "none"]}}),
-       "arrows": {"type": "array", "items": _obj({"to": {"type": "string", "enum": ["L", "R", "F", "B"]}, "label": _S})},
-       "say": _S}
+       "door": {"type": "string", "enum": ["glass", "door", "none"]},
+       "el": {"type": "array", "items": _obj({"why": {"type": "string", "enum": ["button", "display"]},
+                                               "side": {"type": "string", "enum": SIDES}, "m": _N,
+                                               "btn": {"type": "string", "enum": ["L", "R", "none"]}})},
+       "arrows": {"type": "array", "items": _obj({"to": {"type": "string", "enum": ["L", "R", "F", "B"]}, "label": _S})}}
 DEST = _obj({"seen": {"type": "boolean"}, "side": {"type": "string", "enum": SIDES + ["none"]}, "m": _N,
              "why": {"type": "string", "enum": ["plate", "pictogram", "text", "none"]}})
 SEE_SCHEMA = _obj(SEE)
 SEE_DEST_SCHEMA = _obj({**SEE, "dest": DEST})
+PLATE2 = _obj({**PLATE["properties"], "img": {"type": "integer", "enum": [1, 2]}})
+SEE2_SCHEMA = _obj({**SEE, "plates": {"type": "array", "items": PLATE2}})
+SEE2_DEST_SCHEMA = _obj({**SEE, "plates": {"type": "array", "items": PLATE2}, "dest": DEST})
 RECHECK_SCHEMA = _obj({"n": _S, "name": _S})
 
 SYSTEM = """너는 시각장애인 실내 길안내 시스템의 눈이다. 사용자는 가슴 높이에 휴대폰 후면 카메라를 걸고 걷는다. 사진에서 확인되는 사실만 짧게 적는다. 추측하지 않는다.
 
 좌표: 화면 가로를 셋으로 나눠 왼쪽 1/3은 L, 가운데는 C, 오른쪽 1/3은 R. 거리 m은 사용자에서 대상까지 대략의 미터이고, 모르면 -1.
 
-- plates: 방 문 옆이나 위에 붙은 호실 문패. 문패가 없으면 빈 목록.
-  - n: 문패의 호실 번호(숫자와 하이픈만). 가려지거나 흐려 확실하지 않은 자리가 하나라도 있으면 n은 빈 문자열로 두고, 방 이름이라도 읽히면 그 문패는 적는다(나중에 확대해서 다시 읽는다). 번호도 이름도 안 읽히면 적지 않는다. 전화번호, 게시물·포스터의 숫자, 층 안내판 목록의 숫자는 문패가 아니다.
-  - name: 번호와 같은 문패에 적힌 방 이름. 읽을 수 없으면 빈 문자열.
-  - side, m: 문패의 화면 가로 위치와 거리.
-  - on: 문 옆이나 문 위에 붙어 있으면 door, 문과 떨어진 벽이면 wall, 여러 방을 적은 안내판 속이면 board.
+- plates: 방 문 옆이나 위에 붙은 호실 문패. 가까운 것부터 최대 4개. 없으면 빈 목록.
+  - n: 호실 번호(숫자와 하이픈만). 가려지거나 흐려 확실하지 않은 자리가 하나라도 있으면 빈 문자열. 전화번호, 게시물·포스터의 숫자, 층 안내판 목록의 숫자는 문패가 아니다.
+  - name: 번호를 읽었으면 빈 문자열. 번호를 읽을 수 없을 때만 같은 문패의 방 이름.
+  - 번호도 방 이름도 읽을 수 없는 문패는 적지 않는다.
+  - m: 문패까지 거리. on: 문 옆이나 문 위면 door, 문과 떨어진 벽이면 wall, 여러 방을 적은 안내판 속이면 board.
   - box: 문패가 차지하는 영역 [왼쪽, 위, 오른쪽, 아래]. 화면 가로와 세로를 각각 100으로 본 정수.
-  - 가까운 문패부터 적고 최대 4개.
-- floor_sign: 지금 층을 나타내는 층 표지(층 번호 표지판, 층 안내판 제목)의 글자를 그대로. 없으면 빈 문자열. 엘리베이터 문 위나 옆의 운행 표시(엘리베이터가 지금 있는 층)는 적지 않는다.
+- fs: 지금 층을 나타내는 층 표지(층 번호 표지판, 층 안내판 제목)의 글자가 또렷하게 읽힐 때만 그대로. 아니면 빈 문자열. 엘리베이터 문 위나 옆의 운행 표시(엘리베이터가 지금 있는 층)는 적지 않는다.
 - place: 지금 장소. corridor 복도, lobby 로비·넓은 홀, elev_hall 엘리베이터 앞, entrance 건물 출입문, junction 복도 갈림길, room_door 특정 방 문 바로 앞, in_elev 엘리베이터 안, stairs 계단 근처, unknown 판단 불가.
-- door_ahead: 사용자가 지나가야 할 출입문(건물 출입문, 복도를 막는 문)이 정면 가까이에 있으면 유리문은 glass, 그 밖의 문은 door, 없으면 none. 옆 벽의 방 문은 none.
-- elev: 엘리베이터 문이 사진에서 확인될 때만 seen true. why는 근거: 문 옆 호출 버튼이 보이면 button, 층 표시창이 보이면 display. 문 모양만 비슷하고 버튼·표시창이 안 보이면 seen false, why none. btn은 호출 버튼이 엘리베이터 문의 왼쪽 벽이면 L, 오른쪽 벽이면 R, 안 보이면 none.
-- arrows: 화살표 표지판이 사진에서 모양으로 확인될 때만. to는 화살표가 가리키는 방향(L 왼쪽, R 오른쪽, F 앞, B 뒤), label은 화살표와 함께 적힌 글자(없으면 빈 문자열). 최대 3개.
-- say: 걷는 사람에게 도움이 되는 아주 짧은 한국어 한 문장(길이 이어지는 방향, 바로 앞의 문이나 장애물). 스무 자 안쪽. 사진에 없는 것은 말하지 않는다."""
+- door: 사용자가 지나가야 할 출입문(건물 출입문, 복도를 막는 문)이 정면 가까이에 있으면 유리문은 glass, 그 밖의 문은 door, 없으면 none. 옆 벽의 방 문은 none.
+- el: 엘리베이터 문이 사진에서 확인될 때만 가장 가까운 것 하나. 아니면 빈 목록. why는 근거: 문 옆 호출 버튼이 보이면 button, 층 표시창이 보이면 display. 문 모양만 비슷하고 버튼·표시창이 안 보이면 적지 않는다.
+  side, m: 엘리베이터 문의 가로 위치와 거리. btn: 호출 버튼이 엘리베이터 문의 왼쪽 벽이면 L, 오른쪽 벽이면 R, 안 보이면 none.
+- arrows: 화살표 표지판이 사진에서 모양으로 확인될 때만. to는 화살표가 가리키는 방향(L 왼쪽, R 오른쪽, F 앞, B 뒤), label은 화살표와 함께 적힌 글자(없으면 빈 문자열). 최대 3개."""
+
+TWO_RULE = """
+
+사진 두 장은 같은 1초 안에 앞뒤로 찍은 것이다(1이 먼저, 2가 나중). 두 장을 합쳐 한 번만 적는다.
+- 같은 문패가 두 장에 다 보이면 한 번만 적고, 번호가 더 또렷한 사진을 img에 적는다. m, box는 그 사진 기준이다.
+- 나머지 칸은 나중 사진(2) 기준으로 적되, 1에만 보인 것도 적는다."""
 
 DEST_RULE = """
 - dest: 사용자의 목적지가 사진에 보일 때만 seen true. why는 근거(plate 문패 글자, pictogram 그림 표지, text 그 밖의 글자). 안 보이면 seen false, side none, m -1, why none."""
@@ -111,19 +120,24 @@ def clean(data, img_size=None):
             x0, y0, x1, y1 = (max(0, min(100, v)) for v in box)
             box = [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)] if x1 != x0 and y1 != y0 else None
         m = p.get("m", -1)
-        side = p.get("side", "C")
+        side = p.get("side", "C")  # 2단계 캐시(side 칸이 있던 형식)와 상자 없는 문패용
         if box:  # 화면 가로 위치는 상자 가운데로 다시 정한다 (모델의 side와 상자가 어긋나는 경우가 있음)
             cx = (box[0] + box[2]) / 2
             side2 = "L" if cx < 100 / 3 else "R" if cx > 200 / 3 else "C"
-            if side2 != side:
+            if "side" in p and side2 != side:
                 fixes.append(f"{n or name} 방향 {side}→{side2} (상자 기준)")
             side = side2
-        (plates if n else unread).append({"n": n, "name": name, "side": side,
+        (plates if n else unread).append({"img": p.get("img"), "n": n, "name": name, "side": side,
                        "m": round(float(m), 1) if isinstance(m, (int, float)) and m > 0 else None,
                        "on": p.get("on", "wall"), "box": box})
     seen = set()
     plates = [p for p in plates if not (p["n"] in seen or seen.add(p["n"]))]
     plates.sort(key=lambda p: p["m"] if p["m"] is not None else 99)
+    if "elev" not in data:  # 짧은 키 형식(2026-11-18) → 안쪽 형식
+        el = (data.get("el") or [{}])[0] if data.get("el") else {}
+        data = {**data, "floor_sign": data.get("fs", ""), "door_ahead": data.get("door", "none"),
+                "elev": {"seen": bool(el), "why": el.get("why", "none"), "side": el.get("side", "none"),
+                         "m": el.get("m", -1), "btn": el.get("btn", "none")}}
     e = data.get("elev") or {}
     elev = {"seen": bool(e.get("seen")) and e.get("why") in ("button", "display"), "why": e.get("why", "none"),
             "side": e.get("side", "none"), "m": e.get("m") if isinstance(e.get("m"), (int, float)) and e.get("m", 0) > 0 else None,
@@ -133,7 +147,7 @@ def clean(data, img_size=None):
     out = {"plates": plates, "unread": unread, "floor_sign": (data.get("floor_sign") or "").strip(),
            "floor": floor_of_sign(data.get("floor_sign")), "place": data.get("place", "unknown"),
            "door_ahead": data.get("door_ahead", "none"), "elev": elev,
-           "arrows": (data.get("arrows") or [])[:3], "say": (data.get("say") or "").strip(), "fixes": fixes}
+           "arrows": (data.get("arrows") or [])[:3], "fixes": fixes}
     if "dest" in data:
         d = data["dest"]
         out["dest"] = {"seen": bool(d.get("seen")), "side": d.get("side", "none"),
@@ -170,19 +184,35 @@ class Perceiver:
         return rec
 
     def see(self, frame, img=None):
-        """반환: {"obs": 정리한 인식(실패면 None), "call": 호출 기록, "cached": bool}"""
+        """frame: 사진 경로 1개 또는 [앞, 뒤] 2개. 반환: {"obs": 정리한 인식(실패면 None), "call": 호출 기록, "cached": bool}
+        2장이면 문패마다 읽은 사진 경로를 "frame"에 붙인다(확대 재확인에 씀)."""
         dest = self.dest_text
-        key = self._key("see", frame, dest or "")
+        frames = list(frame) if isinstance(frame, (list, tuple)) else [frame]
+        two = len(frames) == 2
+        key = self._key("see2" if two else "see", frames[-1], (Path(frames[0]).name + "+" if two else "") + (dest or ""))
         if key in self.cache:
             r = self.cache[key]
-            return {"obs": clean(r["data"]), "call": r["log"], "cached": True}
-        img = img or Image.open(frame).convert("RGB")
-        system = SYSTEM + (DEST_RULE if dest else "")
-        text = f"사용자의 목적지: {dest}" if dest else "이 사진에 보이는 것을 적어라."
-        content = [jpeg_block(resize(img, self.send_side)), {"type": "text", "text": text}]
-        res = self.client.call(system, content, SEE_DEST_SCHEMA if dest else SEE_SCHEMA, max_tokens=500, kind="see")
+            return {"obs": self._attach(clean(r["data"]), frames), "call": r["log"], "cached": True}
+        system = SYSTEM + (DEST_RULE if dest else "") + (TWO_RULE if two else "")
+        if two:
+            content = []
+            for i, f in enumerate(frames, 1):
+                content += [{"type": "text", "text": f"사진 {i}"}, jpeg_block(resize(Image.open(f).convert("RGB"), self.send_side))]
+            schema = SEE2_DEST_SCHEMA if dest else SEE2_SCHEMA
+        else:
+            content = [jpeg_block(resize(img or Image.open(frames[0]).convert("RGB"), self.send_side))]
+            schema = SEE_DEST_SCHEMA if dest else SEE_SCHEMA
+        content.append({"type": "text", "text": f"사용자의 목적지: {dest}" if dest else "보이는 것을 적어라."})
+        res = self.client.call(system, content, schema, max_tokens=500, kind="see")
         rec = self._store(key, res)
-        return {"obs": clean(res.data) if res.ok else None, "call": rec["log"], "cached": False}
+        return {"obs": self._attach(clean(res.data), frames) if res.ok else None, "call": rec["log"], "cached": False}
+
+    @staticmethod
+    def _attach(obs, frames):
+        for p in obs["plates"] + obs["unread"]:
+            i = p.get("img") if p.get("img") in (1, 2) else len(frames)
+            p["frame"] = str(frames[min(i, len(frames)) - 1])
+        return obs
 
     def recheck(self, frame, plate):
         """문패 조각을 원본 해상도에서 잘라 확대해 다시 읽는다. 반환: {"n", "name", "match", "call", "cached"}"""
