@@ -7,9 +7,11 @@
 ```
 src/kyj/
   nav/      서비스: 시연 웹이 실제로 쓰는 코드 (여기서 실행)
-  tools/    도구: GPU 잠금, Gemini 중계, 시연 기록 다시 돌리기
-  exp/      실험: 시기·주제별로 묶은 지난 실험 스크립트 (기록용)
+  tools/    도구: 시연 기록 다시 돌리기, GPU 잠금
+  eval/     진행 중인 평가: 텍스트 모델 추론 (판단 지점 17개)
 ```
+
+지난 실험 스크립트는 작업 폴더에서 뺐다. 무엇을 했고 어떻게 다시 꺼내는지는 `docs/16_2026-11-17_보관한_실험_목록.md`.
 
 ## nav/ 서비스
 
@@ -45,19 +47,13 @@ CUDA_VISIBLE_DEVICES=3 ../.venv/bin/python navigator.py --mode situ --frames <fr
 |---|---|
 | `replay_sessions.py` | 시연 기록의 사진을 지금 코드에 그대로 다시 넣어 안내가 어떻게 달라지는지 확인 (서버) |
 | `gpu_lock.sh` | GPU 동시 사용 막기 |
-| `gemini_proxy.py` | Ollama 형식 요청을 Gemini로 중계 (Mac 전용, 키는 Mac에만) |
-| `q35_server.py` | qwen3.5 시험용 서버 (10월, 버림) |
 
-## exp/ 실험 (날짜순)
+## eval/
 
-| 폴더 | 내용 | 정리 문서 |
-|---|---|---|
-| `1_photo_2610/` | 사진 1장 파이프라인: 모델 비교, OCR 설정(실험 A), 호실 규칙(B·C), VLM 고르기(D·E), 최종 파이프라인. 옛 이름의 모듈(`pipeline`, `exp_a_ocr`, `run_task` …)도 여기 그대로 있어 서로 부름 | `docs/06`~`09`, `docs/exp/`, 이 폴더의 `README.md` |
-| `2_video_2610/` | 영상 길안내: 판단 지점 17개 평가(`video_reason`), 프레임 정답표, 팀 형식 내보내기, 데모 HTML | `docs/10`~`13` |
-| `3_recog_2611/` | 3층·4층 객체인식 비교(`team_compare`), 해상도·전송량(`res_ab`, `send_ab`), 문패 잘라 읽기(`crop_reread`), YOLOE·OCR 엮기(`fuse_ab`), 다수결 모의(`vote_collect`) | `docs/14` |
-| `4_reason_2611/` | 텍스트 모델 추론: 기억 글로 판단(`reason_memory`), 시계열 기억으로 판단(`reason_series`), 걸음마다 기억 뽑기(`memory_snapshots`) | `docs/15` |
-
-`2_`~`4_`의 스크립트는 맨 위에서 `nav/`를 경로에 넣고 옛 이름을 별칭으로 쓴다(`import perception as pipeline` 등). 본문은 실험 당시 그대로다.
+| 파일 | 하는 일 |
+|---|---|
+| `memory_snapshots.py` | 영상 경로를 돌리며 걸음마다 기억(사건 기록)을 저장 (서버) → `data/video/results/memory_snapshots.json` |
+| `reason_series.py` | 그 기억을 텍스트 모델에 넣어 판단 지점 17개에서 다음 행동을 맞히는지 채점 (Mac, 모델은 서버 Ollama) |
 
 ## 데이터 (저장소 `data/video/`)
 

@@ -1,5 +1,5 @@
 """PaddleOCR 불러오기와 읽기 (한국어 인식 모델 + 글자 위치 모델). 길안내 서비스가 쓴다.
-예전 OCR 설정 실험(exp/1_photo_2610/exp_a_ocr.py)에서 고른 설정(mobile 위치 모델, 긴 변 2048)을 그대로 쓴다.
+예전 OCR 설정 실험(exp_a_ocr.py, docs/16 1절)에서 고른 설정(mobile 위치 모델, 긴 변 2048)을 그대로 쓴다.
 """
 
 import os

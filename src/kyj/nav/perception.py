@@ -1,5 +1,5 @@
 """1단계 인식: YOLOE(물체 위치) + PaddleOCR(글자) + 합치기 규칙 → fields(rooms, floors, spaces, landmarks, directions).
-길안내 서비스(navigator.py, vlm_client.py)가 쓴다. 예전 사진 1장 파이프라인(exp/1_photo_2610/pipeline.py)의 1단계 부분과 같다.
+길안내 서비스(navigator.py, vlm_client.py)가 쓴다. 예전 사진 1장 파이프라인(pipeline.py, docs/16 1절)의 1단계 부분과 같다.
 """
 
 import os
