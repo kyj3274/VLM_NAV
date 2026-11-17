@@ -1,105 +1,71 @@
-# kyj: OCR 중심 실내 길안내 파이프라인 (YOLOE + PaddleOCR + VLM)
+# src/kyj: 실내 길안내 (kyj)
 
-사진 1장에서 길안내 단서(fields: `rooms`, `floors`, `spaces`, `landmarks`, `directions`)를 뽑는다.
-**OCR이 글자를 읽고, YOLOE가 물체 위치를 찾고, VLM은 잘라낸 조각을 보고 "고르기"만 한다.**
-자세한 실험 기록: `docs/07_…`, `docs/08_…`, `docs/exp/` (이 폴더 안).
+시각장애인용 실내 길안내. 휴대폰 웹이 1초마다 사진을 서버로 보내고, 서버가 YOLOE·OCR·Places365와 규칙으로 안내 문장을 만들어 돌려준다. VLM(qwen3-vl 4B)은 층 충돌처럼 드문 사건 때만 부른다.
 
----
-
-## 1. 구조
+## 폴더
 
 ```
-사진 ─┬─ YOLOE (0.14초) ── 문·계단·화장실·비상구표시·사람·상자 위치
-      └─ OCR   (0.53초) ── 글자 + 위치 → 호실 후보 (3자리 숫자)
-                    │
-            [규칙] 호실: 사진 안 첫 자리 다수결, 큰 글자(가까운) 순
-                   방향: 상자 위치로 계산 (왼쪽 1/3=11시, 가운데=12시, 오른쪽=1시)
-                    │
-            [VLM, 사진당 1번] 후보 조각만 보고 고르기 (JSON schema로 답 제한)
-               R 호실 후보 → 예/아니요   O 물체 조각 → 무엇인지   S 표지 → 화살표 방향
-               B (시험 중) 큰 문 양옆 → 엘리베이터 호출 버튼 있나
+src/kyj/
+  nav/      서비스: 시연 웹이 실제로 쓰는 코드 (여기서 실행)
+  tools/    도구: GPU 잠금, Gemini 중계, 시연 기록 다시 돌리기
+  exp/      실험: 시기·주제별로 묶은 지난 실험 스크립트 (기록용)
 ```
 
-## 2. 결과 요약 (qwen3-vl:4b, 평가용 117장)
+## nav/ 서비스
 
-| 방식 | 호실 F1 | 가까운 호실 | 랜드마크 F1 | 화장실 F1 | 시간 중앙값 |
-|---|---|---|---|---|---|
-| qwen3-vl 단독 (run_task.py fields) | 32 | 11/23 | - | - | 4.7초 |
-| qwen2.5vl:7b 단독 | 49 | 18/23 | - | - | 8.5초 |
-| **pipeline_final.py** (R, 엘리베이터 E, S) | 89 | 23/23 | 74 | 30 | 3.8초 |
-| **exp_obj_vlm.py --crop margin** (R, O, S) | 90 | 23/23 | 73 | 64 | 3.5초 |
-| exp_obj_vlm.py --crop margin --buttons | 90 | 23/23 | 76 | 52 | 5.0초 |
-
-- 채점 기준(`eval/survey_v2.json`)은 **사람 정답이 아니다** (사진 조사 + OCR 후보 확인, AI가 만듦). 모델끼리 비교용.
-- "가까운 호실" = 문패 숫자 글자 높이가 사진 높이의 1.5% 이상.
-- 엘리베이터는 아직 어렵다 (문 생김새로는 어떤 모델도 구분 못 함 → 호출 버튼으로 시험 중).
-
-## 3. 파일 지도
-
-**최종으로 쓰는 것**
-| 파일 | 역할 |
+| 파일 | 하는 일 |
 |---|---|
-| `pipeline_final.py` | 전체 실행 (YOLOE+OCR+규칙+VLM). 사진에서 결과까지 한 번에 |
-| `exp_obj_vlm.py` | VLM 부분만 다른 방식으로 (물체 조각 O, 버튼 B). 1단계 결과(jsonl)를 재사용 |
-| `pipeline.py` | YOLOE·OCR 불러오기, 1단계 합치기 규칙 |
-| `room_rules.py` | 호실 후보·다수결 규칙 |
-| `exp_d_vlm.py` | VLM 질문(R, E, S) 만들기·반영 |
-| `exp_a_ocr.py`, `exp_bc_rules.py` | OCR 설정, 규칙 재계산 (위에서 import) |
-| `run_task.py` | 공통 설정, 사진 목록, VLM 단독 fields/signs/perception/navigation 실행 |
-| `score_v2.py` + `eval/` | 채점 (기준 `eval/survey_v2.json`, 조정용·평가용 나누기 `eval/split.json`) |
-| `gpu_lock.sh` | 같은 GPU에서 작업이 겹치지 않게 순서대로 실행 |
+| `web_mac.sh` | **Mac에서 실행.** 서버 웹 켜기·끄기, https 주소, 기록 보기 (`start`, `stop`, `status`, `records`, `record`) |
+| `web_server.py` | 서버 웹. 휴대폰 사진을 받아 `navigator`로 넘기고 안내 문장을 돌려줌. 시연마다 `web_sessions/<시각>_<목적지>/`에 사진·`log.jsonl`·`memory.json` 저장 |
+| `web/index.html` | 휴대폰 화면. 촬영(12장 중 선명한 1장), 말하기(목적지·명령 음성 입력), 안내 음성 |
+| `web_replay.py` | 시연 기록을 다시보기 HTML로 |
+| `navigator.py` | 길안내 본체. `Runner`(인식 실행), `Navigator`(1초마다 상태 갱신과 안내 문장). 영상 경로로도 실행 가능 |
+| `nav_memory.py` | 시간 순서 기억: 문패 믿음 점수(읽힌 횟수·크기·문 옆·가까운 번호), 장소 흐름, 사건 기록 |
+| `perception.py` | YOLOE 물체 인식과 1단계 합치기(rooms, floors, landmarks …) |
+| `ocr_reader.py` | PaddleOCR 불러오기·읽기 (한국어 mobile 모델, 긴 변 2048) |
+| `room_rules.py` | OCR 글자에서 호실 번호 고르기 (첫 자리 다수결 등) |
+| `scene_places.py` | Places365 장소 분류 (엘리베이터 문 판단에 씀) |
+| `vlm_client.py` | 1단계 실행 묶음(`stage1`), 인식 요약 글(`hints`), VLM 호출(`ask`) |
 
-**실험용 (참고만)**: `exp_a_crop.py`, `exp_bc_plate.py`, `exp_e_*.py`, `exp_e_run.sh`, `make_ref_crops.py`, `score_v2_adj.py`, `run_obj.sh`, `run_pipeline.sh`, `install_vision.sh`(환경 설치 기록)
-
-**결과**: `/workspace/capstone/outputs/kyj/final/`에 최종 결과 3개 복사본. 나머지 `outputs/kyj/exp_*`는 중간 실험.
-
-## 4. 환경
-
-- 전용 Python: `/workspace/capstone/src/kyj/.venv` (torch 2.3.1+cu118, ultralytics 8.4, paddleocr 3.7 GPU). 팀 공용 `.venv`와 별개
-- YOLOE 가중치: `src/kyj/models/` (yoloe-11l-seg + mobileclip)
-- OCR 모델: `/root/.paddlex/official_models/` (PaddleOCR이 자동으로 받음)
-- GPU: YOLOE·OCR은 **GPU 3**, VLM은 **GPU 7의 Ollama 0.24.0** (`http://127.0.0.1:11436`)
-  - 기본 Ollama(11434)는 드라이버 문제로 CPU 전용이라 느림
-
-## 5. 다른 모델로 돌리기
-
-**결과는 꼭 자기 폴더로** (`--out-dir`). 안 주면 `outputs/kyj`에 섞인다.
+서비스 모듈끼리 이름으로 서로 부르므로 `nav/` 안에서 실행한다.
 
 ```bash
-cd /workspace/capstone/src/kyj
-
-# (A) 전체 파이프라인 (176장, 약 10~15분)
-./gpu_lock.sh 3 ./gpu_lock.sh 7 env CUDA_VISIBLE_DEVICES=3 .venv/bin/python pipeline_final.py \
-  --name final_gemma3 --model gemma3:4b --out-dir /workspace/capstone/outputs/<이니셜>
-
-# (B) VLM 부분만 (1단계 YOLOE+OCR은 모델과 무관하니 kyj 결과 재사용, 약 10분)
-./gpu_lock.sh 7 .venv/bin/python exp_obj_vlm.py --crop margin \
-  --model minicpm-v:8b --name obj_margin_minicpm --out-dir /workspace/capstone/outputs/<이니셜>
-#   --buttons 를 붙이면 엘리베이터를 호출 버튼으로 판단 (시험 중, 느려짐)
-#   --source 기본값 = /workspace/capstone/outputs/kyj/exp_final_all.jsonl (1단계 원자료)
+# Mac
+bash src/kyj/nav/web_mac.sh start
+# 서버에서 영상 경로로 돌리기
+cd /workspace/capstone/src/kyj/nav
+CUDA_VISIBLE_DEVICES=3 ../.venv/bin/python navigator.py --mode situ --frames <frames_8fps> --out-dir <폴더> --route "314=1_start_졸프_영상3,2b_after_elevator_졸프_영상2"
 ```
 
-서버 Ollama에 있는 모델: `qwen3-vl:4b-instruct`, `qwen2.5vl:7b`, `qwen2.5vl:3b`, `gemma3:4b`, `gemma3:12b`, `minicpm-v:8b`, `llama3.2-vision:11b`, `qwen3.5:4b`.
-→ 5초 기준은 qwen3-vl 4B로 잰 것. 8B 이상은 더 느릴 수 있다.
+모델 파일: YOLOE는 `src/kyj/models/`(서버) 또는 저장소의 `local_models/`(Mac), Places365는 `models/places365/` 또는 `local_models/places365/`.
 
-**qwen3.5:4b 주의 (10/26 시험)**: GPU용 Ollama 0.24.0은 qwen3.5를 못 연다(새 구조). 기본 Ollama(11434, CPU)로는 열리지만 느리다.
-transformers로 GPU에서 돌리는 방법도 시험했다: `install_q35.sh`(별도 환경 `.venv_q35` + 모델 9GB 받기, 약 10분) → `q35_server.py`(Ollama와 같은 형식의 서버, 포트 11437).
-영상 판단 지점 평가에서 qwen3-vl 4B보다 나은 조건이 없었고 생각 모드는 시간 안에 답을 못 내서, 환경과 모델 파일은 지웠다(스크립트만 남김).
+## tools/
 
-## 6. 채점
+| 파일 | 하는 일 |
+|---|---|
+| `replay_sessions.py` | 시연 기록의 사진을 지금 코드에 그대로 다시 넣어 안내가 어떻게 달라지는지 확인 (서버) |
+| `gpu_lock.sh` | GPU 동시 사용 막기 |
+| `gemini_proxy.py` | Ollama 형식 요청을 Gemini로 중계 (Mac 전용, 키는 Mac에만) |
+| `q35_server.py` | qwen3.5 시험용 서버 (10월, 버림) |
 
-```bash
-cd /workspace/capstone/src/kyj
-python3 score_v2.py --split test \
-  "qwen3-vl=/workspace/capstone/outputs/kyj/final/exp_obj_margin.jsonl" \
-  "gemma3=/workspace/capstone/outputs/<이니셜>/exp_obj_margin_gemma3.jsonl"
-```
-- `--split`: `dev`(59장, 설정 고를 때만) / `test`(117장, 마지막 비교용) / `all`
-- 설정은 dev로 고르고, test는 마지막에 한 번만 보는 게 원칙.
+## exp/ 실험 (날짜순)
 
-## 7. 주의
+| 폴더 | 내용 | 정리 문서 |
+|---|---|---|
+| `1_photo_2610/` | 사진 1장 파이프라인: 모델 비교, OCR 설정(실험 A), 호실 규칙(B·C), VLM 고르기(D·E), 최종 파이프라인. 옛 이름의 모듈(`pipeline`, `exp_a_ocr`, `run_task` …)도 여기 그대로 있어 서로 부름 | `docs/06`~`09`, `docs/exp/`, 이 폴더의 `README.md` |
+| `2_video_2610/` | 영상 길안내: 판단 지점 17개 평가(`video_reason`), 프레임 정답표, 팀 형식 내보내기, 데모 HTML | `docs/10`~`13` |
+| `3_recog_2611/` | 3층·4층 객체인식 비교(`team_compare`), 해상도·전송량(`res_ab`, `send_ab`), 문패 잘라 읽기(`crop_reread`), YOLOE·OCR 엮기(`fuse_ab`), 다수결 모의(`vote_collect`) | `docs/14` |
+| `4_reason_2611/` | 텍스트 모델 추론: 기억 글로 판단(`reason_memory`), 시계열 기억으로 판단(`reason_series`), 걸음마다 기억 뽑기(`memory_snapshots`) | `docs/15` |
 
-- GPU 작업은 `gpu_lock.sh <GPU번호> 명령`으로 감싸기 (시간 측정이 서로 망가지지 않게).
-- Ollama(11434, 11436) **재시작·종료 금지**, 모델 pull/삭제는 팀과 상의.
-- VLM 프롬프트에 구체적인 숫자 예시(예: 호실 번호)를 넣으면 모델이 그대로 베낀다.
-- 문의: kyj
+`2_`~`4_`의 스크립트는 맨 위에서 `nav/`를 경로에 넣고 옛 이름을 별칭으로 쓴다(`import perception as pipeline` 등). 본문은 실험 당시 그대로다.
+
+## 데이터 (저장소 `data/video/`)
+
+| 경로 | 내용 |
+|---|---|
+| `raw/` | 원본 영상 3개 |
+| `frames/`, `frames_8fps/` | 1초 1장, 1초 8장 프레임 |
+| `checkpoints.json` | 판단 지점 17개 정답 |
+| `frame_gt.json` | 프레임 정답표 |
+| `results/` | 실험 결과(jsonl, log, 데모 HTML) |
+| `deliverable/` | 공유용 경로 영상 |
