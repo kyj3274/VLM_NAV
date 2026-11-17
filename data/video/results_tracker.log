@@ -1,0 +1,127 @@
+/workspace/capstone/src/kyj/exp_a_ocr.py:93: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+  return PaddleOCR(
+[32mCreating model: ('PP-OCRv5_mobile_det', None, None)[0m
+[32mModel files already exist. Using cached files. To redownload, please delete the directory manually: `/root/.paddlex/official_models/PP-OCRv5_mobile_det`.[0m
+/workspace/capstone/src/kyj/.venv/lib/python3.10/site-packages/paddle/utils/cpp_extension/extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+  warnings.warn(warning_message)
+[32mCreating model: ('korean_PP-OCRv5_mobile_rec', None, None)[0m
+[32mModel files already exist. Using cached files. To redownload, please delete the directory manually: `/root/.paddlex/official_models/korean_PP-OCRv5_mobile_rec`.[0m
+[314] 1_s 00s 장8 VLM1 [] 6.16s | 314호로 안내를 시작합니다. 314호는 3층입니다. 앞에 유리문이 있습니다. 문을 열고 들어가세요.
+[314] 1_s 01s 장1 VLM0 [] 0.35s | 
+[314] 1_s 02s 장8 VLM0 [] 1.18s | 
+[314] 1_s 03s 장8 VLM0 [] 1.28s | 
+[314] 1_s 04s 장1 VLM0 [] 0.41s | 
+[314] 1_s 05s 장1 VLM0 [] 0.30s | 
+[314] 1_s 06s 장1 VLM0 [] 0.34s | 
+[314] 1_s 07s 장1 VLM0 [] 0.30s | 
+[314] 1_s 08s 장1 VLM0 [] 0.28s | 
+[314] 1_s 09s 장1 VLM1 [] 5.21s | 복도가 앞으로 이어집니다. 계속 직진하세요.
+[314] 1_s 10s 장1 VLM0 [] 0.32s | 
+[314] 1_s 11s 장8 VLM0 [] 1.95s | 
+[314] 1_s 12s 장1 VLM0 [] 0.35s | 
+[314] 1_s 13s 장8 VLM0 [] 2.58s | 
+[314] 1_s 14s 장8 VLM0 [] 2.63s | 
+[314] 1_s 15s 장1 VLM1 [] 5.10s | 앞에 엘리베이터가 있습니다. 엘리베이터를 타고 3층을 누르세요.
+[314] 1_s 16s 장8 VLM0 [] 1.80s | 
+[314] 1_s 17s 장1 VLM0 [] 0.36s | 
+[314] 1_s 18s 장8 VLM0 [] 2.12s | 
+[314] 1_s 19s 장8 VLM0 [] 1.78s | 
+[314] 1_s 20s 장8 VLM0 [] 2.44s | 
+[314] 1_s 21s 장8 VLM0 [] 2.29s | 
+[314] 1_s 22s 장8 VLM0 [] 3.08s | 
+[314] 1_s 23s 장8 VLM0 [] 2.25s | 
+[314] 1_s 24s 장1 VLM0 [] 0.54s | 
+[314] 1_s 25s 장8 VLM0 [] 2.79s | 
+[314] 1_s 26s 장8 VLM0 [] 1.91s | 
+[314] 1_s 27s 장3 VLM0 [] 0.95s | 
+[314] 2b_ 00s 장8 VLM1 [] 8.56s | 엘리베이터에서 내렸습니다. 복도가 여러 방향으로 이어집니다. 문패를 확인하며 천천히 이동하세요.
+[314] 2b_ 01s 장8 VLM0 [] 3.11s | 
+[314] 2b_ 02s 장8 VLM0 [] 2.67s | 
+[314] 2b_ 03s 장1 VLM0 [] 0.68s | 
+[314] 2b_ 04s 장8 VLM0 ['317'] 2.87s | 3층이 맞습니다. 지금 317호 근처입니다.
+[314] 2b_ 05s 장1 VLM0 ['317'] 0.43s | 
+[314] 2b_ 06s 장8 VLM0 [] 2.98s | 
+[314] 2b_ 07s 장1 VLM0 [] 0.25s | 
+[314] 2b_ 08s 장8 VLM0 ['316', '310'] 2.27s | 316호를 지나고 있습니다. 목적지 방향이 맞습니다. 계속 직진하세요.
+[314] 2b_ 09s 장8 VLM0 ['309'] 2.61s | 
+[314] 2b_ 10s 장8 VLM0 ['309'] 2.27s | 
+[314] 2b_ 11s 장8 VLM0 [] 2.66s | 
+[314] 2b_ 12s 장8 VLM0 [] 2.81s | 
+[314] 2b_ 13s 장8 VLM0 [] 2.78s | 
+[314] 2b_ 14s 장8 VLM0 ['315'] 2.57s | 315호를 지나고 있습니다. 목적지 방향이 맞습니다. 계속 직진하세요.
+[314] 2b_ 15s 장8 VLM0 ['315'] 2.75s | 
+[314] 2b_ 16s 장8 VLM0 ['315'] 4.01s | 
+[314] 2b_ 17s 장8 VLM0 ['315'] 3.07s | 
+[314] 2b_ 18s 장8 VLM0 [] 3.48s | 
+[314] 2b_ 19s 장8 VLM0 [] 3.39s | 
+[314] 2b_ 20s 장8 VLM0 ['307'] 1.94s | 
+[314] 2b_ 21s 장8 VLM0 ['307'] 1.96s | 
+[314] 2b_ 22s 장8 VLM0 ['307'] 2.05s | 
+[314] 2b_ 23s 장8 VLM0 ['307'] 2.55s | 
+[314] 2b_ 24s 장8 VLM0 [] 3.20s | 
+[314] 2b_ 25s 장8 VLM0 ['313'] 2.80s | 313호를 지나고 있습니다. 목적지 방향이 맞습니다. 계속 직진하세요.
+[314] 2b_ 26s 장8 VLM0 ['313'] 2.96s | 
+[314] 2b_ 27s 장7 VLM0 ['313', '314'] 1.43s | 목적지 314호가 왼쪽 앞에 보입니다. 약 2m 남았습니다.
+[314] 56초, VLM 4번, 다시 본 구간 41, 시간 중앙값 2.28s 최대 8.56s
+[314] 1_s 00s 장8 VLM1 [] 5.90s | 314호로 안내를 시작합니다. 314호는 3층입니다. 앞에 유리문이 있습니다. 문을 열고 들어가세요.
+[314] 1_s 01s 장1 VLM0 [] 0.33s | 
+[314] 1_s 02s 장8 VLM0 [] 1.20s | 
+[314] 1_s 03s 장8 VLM0 [] 1.27s | 
+[314] 1_s 04s 장1 VLM0 [] 0.40s | 
+[314] 1_s 05s 장1 VLM0 [] 0.25s | 
+[314] 1_s 06s 장1 VLM0 [] 0.30s | 
+[314] 1_s 07s 장1 VLM0 [] 0.29s | 
+[314] 1_s 08s 장1 VLM0 [] 0.26s | 
+[314] 1_s 09s 장1 VLM1 [] 4.45s | 복도가 앞으로 이어집니다. 계속 직진하세요.
+[314] 1_s 10s 장1 VLM0 [] 0.28s | 
+[314] 1_s 11s 장8 VLM0 [] 1.96s | 
+[314] 1_s 12s 장1 VLM0 [] 0.32s | 
+[314] 1_s 13s 장8 VLM0 [] 2.56s | 
+[314] 1_s 14s 장8 VLM0 [] 2.37s | 
+[314] 1_s 15s 장1 VLM1 [] 4.77s | 앞에 엘리베이터가 있습니다. 엘리베이터를 타고 3층을 누르세요.
+[314] 1_s 16s 장8 VLM0 [] 1.76s | 
+[314] 1_s 17s 장1 VLM0 [] 0.36s | 
+[314] 1_s 18s 장8 VLM0 [] 2.13s | 
+[314] 1_s 19s 장8 VLM0 [] 1.77s | 
+[314] 1_s 20s 장8 VLM0 [] 2.36s | 
+[314] 1_s 21s 장8 VLM0 [] 2.24s | 
+[314] 1_s 22s 장8 VLM0 [] 3.03s | 
+[314] 1_s 23s 장8 VLM0 [] 2.22s | 
+[314] 1_s 24s 장1 VLM0 [] 0.49s | 
+[314] 1_s 25s 장8 VLM0 [] 2.78s | 
+[314] 1_s 26s 장8 VLM0 [] 1.91s | 
+[314] 1_s 27s 장3 VLM0 [] 0.95s | 
+[314] 2a_ 00s 장1 VLM1 ['410'] 4.37s | 엘리베이터에서 내렸습니다. 복도가 여러 방향으로 이어집니다. 문패를 확인하며 천천히 이동하세요. / 여기는 4층입니다. 314호는 3층에 있습니다. 엘리베이터로 돌아가 3층을 누르세요.
+[314] 2a_ 01s 장1 VLM0 [] 0.25s | 
+[314] 2a_ 02s 장1 VLM0 [] 0.28s | 
+[314] 2a_ 03s 장1 VLM0 [] 1.01s | 
+[314] 2a_ 04s 장1 VLM0 [] 1.92s | 
+[314] 2a_ 05s 장1 VLM0 [] 0.38s | 
+[314] 2a_ 06s 장1 VLM0 [] 0.28s | 
+[314] 2a_ 07s 장1 VLM0 [] 0.31s | 
+[314] 2a_ 08s 장1 VLM0 [] 0.33s | 
+[314] 2a_ 09s 장8 VLM0 [] 4.16s | 
+[314] 2a_ 10s 장8 VLM0 ['407'] 3.27s | 
+[314] 2a_ 11s 장1 VLM0 ['407'] 1.10s | 
+[314] 2a_ 12s 장1 VLM0 [] 0.46s | 
+[314] 2a_ 13s 장8 VLM0 [] 3.59s | 
+[314] 2a_ 14s 장1 VLM0 [] 0.35s | 
+[314] 2a_ 15s 장1 VLM0 [] 0.78s | 
+[314] 2a_ 16s 장1 VLM0 [] 0.25s | 
+[314] 2a_ 17s 장1 VLM0 [] 0.22s | 
+[314] 2a_ 18s 장1 VLM0 [] 0.22s | 
+[314] 2a_ 19s 장1 VLM0 [] 0.27s | 
+[314] 2a_ 20s 장1 VLM0 [] 0.21s | 
+[314] 2a_ 21s 장1 VLM1 [] 4.58s | 
+[314] 2a_ 22s 장8 VLM0 ['412'] 4.17s | 
+[314] 2a_ 23s 장1 VLM0 [] 0.31s | 
+[314] 2a_ 24s 장1 VLM0 [] 0.66s | 
+[314] 2a_ 25s 장1 VLM0 [] 0.28s | 
+[314] 2a_ 26s 장1 VLM0 [] 0.40s | 
+[314] 2a_ 27s 장1 VLM0 [] 0.34s | 
+[314] 2a_ 28s 장8 VLM0 ['413'] 3.46s | 
+[314] 2a_ 29s 장1 VLM0 [] 0.25s | 
+[314] 2a_ 30s 장8 VLM0 ['413'] 3.92s | 
+[314] 2a_ 31s 장1 VLM0 ['413'] 1.07s | 
+[314] 60초, VLM 5번, 다시 본 구간 22, 시간 중앙값 0.87s 최대 5.90s
+ALL DONE

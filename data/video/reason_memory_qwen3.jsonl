@@ -1,0 +1,51 @@
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "1", "gold": ["문 통과"], "answer": {"on_track": "모름", "next_action": "문 통과", "say": "문 통과하여 주변을 확인해 보세요."}, "hit": true, "seconds": 3.5}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "2", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "엘리베이터로 돌아가기", "say": "엘리베이터로 돌아가서 3층으로 가주세요."}, "hit": false, "seconds": 2.94}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "3", "gold": ["엘리베이터 타기"], "answer": {"on_track": "예", "next_action": "엘리베이터 타기", "say": "엘리베이터로 이동해 주세요."}, "hit": true, "seconds": 2.87}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "4", "gold": ["엘리베이터 타기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "엘리베이터로 돌아가서 다시 확인해 보세요."}, "hit": false, "seconds": 3.03}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "5", "gold": ["멈추고 둘러보기", "직진"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "엘리베이터로 돌아가 3층을 눌러주세요."}, "hit": false, "seconds": 3.27}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "A6", "gold": ["직진", "멈추고 둘러보기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "317호는 왼쪽에 있어요, 314호는 더 앞에 있어요."}, "hit": false, "seconds": 3.3}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "A7", "gold": ["직진"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "왼쪽으로 방향을 바꿔주세요."}, "hit": false, "seconds": 2.63}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "A8", "gold": ["직진"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "315호는 지나쳤습니다. 왼쪽으로 방향을 바꿔주세요."}, "hit": false, "seconds": 3.12}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "A9", "gold": ["직진"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "313호는 왼쪽에 있어요. 목적지는 314호입니다."}, "hit": false, "seconds": 3.09}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "A10", "gold": ["도착", "목적지 접근"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "313호는 왼쪽에 있어요, 계속 직진하면 314호가 나와요."}, "hit": false, "seconds": 3.14}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "C6", "gold": ["직진", "멈추고 둘러보기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "317호는 왼쪽에 있어요, 318호는 그 다음입니다."}, "hit": false, "seconds": 3.47}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "C7", "gold": ["뒤로 돌기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "왼쪽으로 방향을 바꿔주세요."}, "hit": false, "seconds": 2.62}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "C8", "gold": ["뒤로 돌기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "315호는 지나쳤습니다. 왼쪽으로 방향을 바꿔주세요."}, "hit": false, "seconds": 3.11}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "B5", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "모름", "next_action": "문 통과", "say": "문 통과 해보세요. 방 번호를 확인해 주세요."}, "hit": false, "seconds": 3.64}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "B6", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "407호는 지나쳤습니다. 왼쪽으로 방향을 바꿔주세요."}, "hit": false, "seconds": 3.12}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "B7", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "왼쪽으로 방향을 바꿔주세요."}, "hit": false, "seconds": 2.59}
+{"model": "qwen3:14b+think_off", "kind": "raw", "id": "B8", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "왼쪽", "say": "413호는 지나가셨으니 왼쪽으로 방향 전환해 주세요."}, "hit": false, "seconds": 3.22}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "1", "gold": ["문 통과"], "answer": {"on_track": "아니요", "next_action": "문 통과", "say": "문 통과하여 층을 확인해 주세요."}, "hit": true, "seconds": 3.2}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "2", "gold": ["직진"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "엘리베이터로 돌아가서 층을 확인해 주세요."}, "hit": false, "seconds": 3.4}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "3", "gold": ["엘리베이터 타기"], "answer": {"on_track": "예", "next_action": "엘리베이터 타기", "say": "엘리베이터로 이동해 주세요."}, "hit": true, "seconds": 2.85}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "4", "gold": ["엘리베이터 타기"], "answer": {"on_track": "모름", "next_action": "엘리베이터로 돌아가기", "say": "엘리베이터로 돌아가서 층을 확인해 주세요."}, "hit": false, "seconds": 3.17}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "5", "gold": ["멈추고 둘러보기", "직진"], "answer": {"on_track": "모름", "next_action": "문 통과", "say": "문 통과하여 층을 확인해 주세요."}, "hit": false, "seconds": 3.03}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "A6", "gold": ["직진", "멈추고 둘러보기"], "answer": {"on_track": "예", "next_action": "왼쪽", "say": "왼쪽으로 가면 314호가 있습니다."}, "hit": false, "seconds": 2.88}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "A7", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "왼쪽", "say": "왼쪽으로 가면 314호가 있습니다."}, "hit": false, "seconds": 2.94}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "A8", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "왼쪽", "say": "315호를 지나 왼쪽으로 가면 314호가 있어요."}, "hit": false, "seconds": 3.37}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "A9", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "왼쪽", "say": "313호 왼쪽으로 가면 314호입니다."}, "hit": false, "seconds": 3.21}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "A10", "gold": ["도착", "목적지 접근"], "answer": {"on_track": "예", "next_action": "왼쪽", "say": "313호 왼쪽으로 가면 314호입니다."}, "hit": false, "seconds": 3.2}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "C6", "gold": ["직진", "멈추고 둘러보기"], "answer": {"on_track": "예", "next_action": "오른쪽", "say": "317호가 보입니다. 목적지는 오른쪽으로 갑니다."}, "hit": false, "seconds": 3.46}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "C7", "gold": ["뒤로 돌기"], "answer": {"on_track": "예", "next_action": "오른쪽", "say": "318호 방향으로 오른쪽으로 가세요."}, "hit": false, "seconds": 3.09}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "C8", "gold": ["뒤로 돌기"], "answer": {"on_track": "예", "next_action": "오른쪽", "say": "315호를 지나 오른쪽으로 가면 318호가 있어요."}, "hit": false, "seconds": 3.44}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "B5", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "모름", "next_action": "문 통과", "say": "문 통과해 보세요. 층 수를 확인해 주세요."}, "hit": false, "seconds": 3.49}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "B6", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "4층입니다. 3층으로 내려가야 합니다. 엘리베이터로 돌아가 주세요."}, "hit": true, "seconds": 3.92}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "B7", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "4층이네요. 3층으로 내려가야 합니다. 엘리베이터로 돌아가 주세요."}, "hit": true, "seconds": 3.72}
+{"model": "qwen3:14b+think_off", "kind": "facts", "id": "B8", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "4층이네요. 3층으로 내려가야 합니다. 엘리베이터로 돌아가 주세요."}, "hit": true, "seconds": 3.74}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "1", "gold": ["문 통과"], "answer": null, "hit": false, "seconds": 71.52}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "2", "gold": ["직진"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "엘리베이터 방향으로 돌아가 주세요."}, "hit": false, "seconds": 32.79}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "3", "gold": ["엘리베이터 타기"], "answer": {"on_track": "예", "next_action": "엘리베이터 타기", "say": "엘리베이터로 이동해 3층으로 가세요."}, "hit": true, "seconds": 44.01}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "4", "gold": ["엘리베이터 타기"], "answer": null, "hit": false, "seconds": 71.02}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "5", "gold": ["멈추고 둘러보기", "직진"], "answer": {"on_track": "모름", "next_action": "문 통과", "say": "문에 표지판이 있는지 확인해 보세요."}, "hit": false, "seconds": 40.13}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "A6", "gold": ["직진", "멈추고 둘러보기"], "answer": {"on_track": "예", "next_action": "오른쪽", "say": "317호와 반대 방향으로 오른쪽으로 이동하세요."}, "hit": false, "seconds": 48.35}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "A7", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "직진", "say": "314호 방향으로 계속 직진하세요. 왼쪽에 316호가 보입니다."}, "hit": true, "seconds": 55.53}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "A8", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "직진", "say": "315호 옆에 314호가 있습니다. 직진하세요."}, "hit": true, "seconds": 29.15}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "A9", "gold": ["직진"], "answer": {"on_track": "예", "next_action": "직진", "say": "314호는 앞쪽에 있습니다. 계속 직진하고 양쪽 문을 확인해 보세요."}, "hit": true, "seconds": 38.53}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "A10", "gold": ["도착", "목적지 접근"], "answer": {"on_track": "예", "next_action": "직진", "say": "314호는 현재 방향으로 직진하면 있습니다."}, "hit": false, "seconds": 20.02}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "C6", "gold": ["직진", "멈추고 둘러보기"], "answer": {"on_track": "예", "next_action": "직진", "say": "317호가 왼쪽에 있으니, 직진해서 오른쪽을 확인해 보세요."}, "hit": true, "seconds": 17.61}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "C7", "gold": ["뒤로 돌기"], "answer": {"on_track": "예", "next_action": "직진", "say": "318호는 현재 방향으로 직진하면 됩니다."}, "hit": false, "seconds": 58.48}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "C8", "gold": ["뒤로 돌기"], "answer": {"on_track": "예", "next_action": "직진", "say": "앞으로 계속 직진하세요. 318호가 곧 나타납니다."}, "hit": false, "seconds": 29.2}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "B5", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "모름", "next_action": "문 통과", "say": "현재 층 확인 후, 314호가 있는 층인지 확인하세요."}, "hit": false, "seconds": 21.97}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "B6", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "3층으로 가기 위해 엘리베이터로 이동하세요."}, "hit": true, "seconds": 32.36}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "B7", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "3층으로 내려가세요. 엘리베이터를 찾아주세요."}, "hit": true, "seconds": 25.63}
+{"model": "qwen3:14b+think_on", "kind": "facts", "id": "B8", "gold": ["엘리베이터로 돌아가기"], "answer": {"on_track": "아니요", "next_action": "엘리베이터로 돌아가기", "say": "현재 4층입니다. 3층으로 이동하려면 엘리베이터로 가세요."}, "hit": true, "seconds": 23.32}

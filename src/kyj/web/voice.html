@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>목적지 말하기 시험</title>
+<style>
+  /* 시각장애인용 음성 입력 시험 페이지: 화면 전체가 버튼. 길안내 웹(index.html)에 넣기 전에 휴대폰에서 인식만 확인 */
+  :root { --bg:#f6f7f9; --text:#15171a; --muted:#5d6570; --accent:#1f6feb; --ok:#1a7f37; --warn:#b54708; --line:#dde1e6; --card:#fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --text:#eef0f3; --muted:#9aa3ad; --accent:#4c8dff; --ok:#3fb950; --warn:#f0883e; --line:#2a2f37; --card:#181b21; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+  #pad { width:100%; min-height:62vh; border:0; background:var(--card); color:var(--text); display:flex; flex-direction:column;
+         align-items:center; justify-content:center; gap:14px; padding:24px 16px; font:inherit; cursor:pointer; border-bottom:1px solid var(--line); }
+  #pad:focus-visible { outline:4px solid var(--accent); outline-offset:-4px; }
+  #mode { font-size:15px; font-weight:700; color:var(--muted); letter-spacing:.02em; }
+  #pad[data-m=listen] #mode { color:var(--warn); }
+  #pad[data-m=done] #mode { color:var(--ok); }
+  #say { font-size:26px; line-height:1.45; font-weight:700; text-align:center; max-width:28ch; }
+  #room { font-size:56px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); min-height:1.2em; }
+  .wrap { max-width:720px; margin:0 auto; padding:14px 16px 32px; display:grid; gap:10px; }
+  .muted { color:var(--muted); font-size:14px; line-height:1.5; }
+  #log { font-size:14px; }
+  #log div { padding:6px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+  #log .t { color:var(--muted); margin-right:6px; font-variant-numeric:tabular-nums; }
+  label { font-size:15px; display:inline-flex; gap:6px; align-items:center; }
+</style>
+</head>
+<body>
+<button id="pad" data-m="idle" aria-live="polite">
+  <span id="mode">대기</span>
+  <span id="room"></span>
+  <span id="say">화면 아무 곳이나 누르고 목적지를 말하세요. 예: "317호"</span>
+</button>
+<div class="wrap">
+  <label><input id="speak" type="checkbox" checked> 소리로 읽기</label>
+  <p class="muted">화면을 누르면 듣기 시작합니다. "삼백십칠 호", "삼 일 칠", "317호로 가 줘" 모두 됩니다. 확인 질문에는 "네" 또는 "아니요"로 답합니다.
+    "안내 시작", "멈춰", "엘리베이터에서 내렸어", "끝"은 명령으로 알아듣고 기록만 합니다(시험 페이지라 실제 안내는 하지 않음).
+    아이폰은 확인 질문 뒤에 저절로 듣지 못하면 화면을 한 번 더 누르세요.</p>
+  <div id="log"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let phase = "room", room = null, rec = null, busy = false;
+
+function log(text) {
+  const d = document.createElement("div");
+  d.innerHTML = `<span class="t">${new Date().toLocaleTimeString("ko-KR", {hour12: false})}</span>`;
+  d.append(text); $("log").prepend(d);
+}
+function show(mode, m, text) { $("pad").dataset.m = m; $("mode").textContent = mode; if (text) $("say").textContent = text; }
+
+// 말하는 동안에는 듣지 않는다 (안내 음성을 마이크가 다시 듣지 않게). 다 말하면 then
+function speak(text) {
+  $("say").textContent = text; log("안내: " + text);
+  return new Promise(res => {
+    if (!$("speak").checked || !window.speechSynthesis) return res();
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text); u.lang = "ko-KR"; u.rate = 1.05;
+    let done = false; const fin = () => { if (!done) { done = true; res(); } };
+    u.onend = u.onerror = fin;
+    setTimeout(fin, 2500 + text.length * 180);  // 끝 알림이 안 오는 기기(아이폰 등) 대비
+    speechSynthesis.speak(u);
+  });
+}
+
+// ---- 한국어 숫자 → 숫자
+const DIG = {영: 0, 공: 0, 빵: 0, 일: 1, 하나: 1, 이: 2, 둘: 2, 삼: 3, 셋: 3, 사: 4, 넷: 4, 오: 5, 육: 6, 륙: 6, 칠: 7, 팔: 8, 구: 9};
+function sino(word) {  // "삼백십칠" → 317, "삼일칠" → 317 (자리 단위가 없으면 한 자리씩)
+  if (!word) return null;
+  if (/[천백십]/.test(word)) {
+    let total = 0, cur = 0;
+    for (const ch of word) {
+      if (ch in DIG) cur = DIG[ch];
+      else if (ch === "천") { total += (cur || 1) * 1000; cur = 0; }
+      else if (ch === "백") { total += (cur || 1) * 100; cur = 0; }
+      else if (ch === "십") { total += (cur || 1) * 10; cur = 0; }
+      else return null;
+    }
+    return String(total + cur);
+  }
+  let s = "";
+  for (const ch of word) { if (!(ch in DIG)) return null; s += DIG[ch]; }
+  return s || null;
+}
+function parseRoom(text) {
+  const t = text.replace(/\s+/g, " ").trim();
+  let m = t.replace(/(\d)\s+(?=\d)/g, "$1").match(/(\d{3,4})(?:\s*(?:다시|-|에|의)\s*(\d{1,2}))?/);  // 317, 3 1 7, 317-1
+  if (m) return m[2] ? `${m[1]}-${m[2]}` : m[1];
+  // 한국어 숫자: 공백을 지우고 숫자 글자만 이어진 가장 긴 덩어리
+  const compact = t.replace(/\s+/g, "");
+  const runs = compact.match(/[영공빵일이삼사오육륙칠팔구천백십]+/g) || [];
+  for (const r of runs.sort((a, b) => b.length - a.length)) {
+    const v = sino(r);
+    if (v && /^\d{3,4}$/.test(v)) return v;
+  }
+  return null;
+}
+const clean = a => a.replace(/[.,!?~\s]/g, "").toLowerCase();
+const NO = /(아니|아뇨|틀려|틀렸|다시|노$|no)/;
+const YES = /^(네+|내+|넵|넹|예+|에|응+|어+|웅|엉|맞|그래|그렇|좋아|오케이|ok|okay|yes|yeah|ne$|ye$|시작)/;
+const isNo = a => NO.test(clean(a)), isYes = a => !isNo(a) && YES.test(clean(a));
+const COMMANDS = [[/안내\s*시작|출발/, "안내 시작"], [/멈춰|정지|잠깐/, "일시 정지"], [/내렸/, "엘리베이터에서 내림"], [/^끝|그만|종료/, "안내 끝"]];
+
+let actx = null;
+function beep() {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime + 0.12);
+  } catch (e) {}
+}
+function listen() {
+  if (!SR) { speak("이 브라우저는 음성 인식을 지원하지 않습니다. 안드로이드 크롬이나 아이폰 사파리에서 열어 주세요."); return; }
+  if (busy && rec) { try { rec.abort(); } catch (e) {} }
+  busy = true;
+  rec = new SR(); rec.lang = "ko-KR"; rec.interimResults = true; rec.maxAlternatives = 5; rec.continuous = false;
+  const t0 = performance.now();
+  let got = false, interim = [], spoke = false;  // 짧은 "네"는 최종 결과 없이 끝나는 일이 있어 중간 결과를 남겨 둠
+  show("준비 중", "idle", "삑 소리가 나면 말하세요");
+  rec.onaudiostart = () => { beep(); show("듣는 중", "listen", phase === "confirm" ? `${room}호가 맞으면 "맞아요" 또는 화면 두 번` : "말씀하세요"); log(`마이크 켜짐 (${((performance.now() - t0) / 1000).toFixed(1)}초)`); };
+  rec.onspeechstart = () => { spoke = true; };
+  rec.onresult = e => {
+    const r = e.results[e.results.length - 1];
+    const alts = [...r].map(a => a.transcript).filter(Boolean);
+    if (!r.isFinal) { if (alts.length) interim = alts; return; }
+    if (got) return;
+    got = true;
+    log(`들은 말 (${((performance.now() - t0) / 1000).toFixed(1)}초): ${alts.join(" | ")}`);
+    handle(alts);
+  };
+  let errored = false;
+  rec.onerror = e => { errored = e.error !== "aborted"; log("인식 오류: " + e.error); if (e.error === "no-speech") { if (phase === "confirm") return listenAfter(`못 들었습니다. ${room}호가 맞으면 맞아요라고 말하거나 화면을 두 번 누르세요.`); speak("못 들었습니다. 화면을 누르고 다시 말해 주세요."); } if (e.error === "not-allowed") speak("마이크 권한이 필요합니다. 브라우저 설정에서 마이크를 허용해 주세요."); };
+  rec.onend = () => {
+    busy = false;
+    if ($("pad").dataset.m === "listen") show("대기", "idle");
+    if (got || errored) return;
+    if (interim.length) { got = true; log(`들은 말 (중간 결과): ${interim.join(" | ")}`); return handle(interim); }
+    log(`결과 없이 끝남 (말소리 ${spoke ? "있었음" : "없었음"})`);
+    if (phase === "confirm") listenAfter(`대답을 못 들었습니다. ${room}호가 맞으면 맞아요라고 말하거나 화면을 두 번 누르세요. 아니면 아니요라고 말하세요.`);
+    else speak("못 들었습니다. 화면을 누르고 다시 말해 주세요.");
+  };
+  try { rec.start(); } catch (e) { busy = false; log("듣기 시작 실패: " + e.message); speak("화면을 눌러 답해 주세요."); }
+}
+async function listenAfter(text) {  // 말을 다 하고 나서 듣는다. 아이폰은 사용자 터치 없이 못 들을 수 있음
+  await speak(text);
+  try { listen(); } catch (e) { $("say").textContent = "화면을 눌러 답해 주세요"; }
+}
+
+async function confirmRoom(how) {
+  if (rec) { try { rec.abort(); } catch (e) {} }
+  phase = "done"; show("목적지 확정", "done");
+  log(`확정 (${how}): ${room}호`);
+  await speak(`${room}호로 안내를 시작하겠습니다.`);
+  phase = "room";
+}
+async function handle(alts) {
+  const first = alts[0] || "";
+  if (phase === "confirm") {
+    if (alts.some(isYes)) return confirmRoom("말");
+    const again = alts.map(parseRoom).find(Boolean);
+    if (again && again !== room) { room = again; $("room").textContent = room + "호"; return listenAfter(`${room}호가 맞습니까? 맞으면 맞아요라고 말하거나 화면을 두 번 누르세요.`); }
+    if (alts.some(isNo)) { phase = "room"; room = null; $("room").textContent = ""; return listenAfter("목적지를 다시 말해 주세요."); }
+    return listenAfter(`잘 못 들었습니다. ${room}호가 맞으면 맞아요라고 말하거나 화면을 두 번 누르세요.`);
+  }
+  for (const [re, name] of COMMANDS) if (alts.some(a => re.test(a))) { show("명령", "done", `명령: ${name}`); log(`명령 인식: ${name}`); return speak(`${name}.`); }
+  const r = alts.map(parseRoom).find(Boolean);
+  if (!r) return speak(`"${first}"라고 들었습니다. 호실 번호를 찾지 못했습니다. 화면을 누르고 다시 말해 주세요.`);
+  room = r; phase = "confirm"; $("room").textContent = room + "호";
+  listenAfter(`${room}호가 맞습니까? 맞으면 맞아요라고 말하거나 화면을 두 번 누르세요.`);
+}
+
+let lastTap = 0, tapTimer = null;
+$("pad").onclick = () => {  // 확인 단계에서 두 번 누르면 '네'. 한 번 누르면 다시 듣기
+  const now = performance.now();
+  if (phase === "confirm" && now - lastTap < 450) { clearTimeout(tapTimer); lastTap = 0; speechSynthesis?.cancel(); return confirmRoom("화면 두 번"); }
+  lastTap = now;
+  clearTimeout(tapTimer);
+  tapTimer = setTimeout(() => { speechSynthesis?.cancel(); listen(); }, phase === "confirm" ? 450 : 0);
+};
+if (!SR) { show("지원 안 됨", "idle", "이 브라우저는 음성 인식을 지원하지 않습니다. 안드로이드 크롬이나 아이폰 사파리에서 열어 주세요."); }
+// 시험용: 주소 뒤 #test 를 붙이면 숫자 변환 결과를 기록에 보여 줌
+if (location.hash === "#test") for (const s of ["317호", "삼백십칠 호", "삼 일 칠 호", "삼일칠호로 가 줘", "3 1 7", "사백십 호", "317 다시 1", "천이백삼호", "이백구호"]) log(`${s} → ${parseRoom(s)}`);
+</script>
+</body>
+</html>

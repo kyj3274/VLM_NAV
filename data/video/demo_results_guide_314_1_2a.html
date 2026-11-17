@@ -1,0 +1,83 @@
+<!doctype html><html lang='ko'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>314호 안내 시연</title><style>
+:root { --bg:#fafaf8; --fg:#1d1d1b; --muted:#6b6b66; --card:#fff; --line:#e4e2dc; --say:#0b5cad; --vlm:#b5480b; --dense:#4b7a1e; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ecebe6; --muted:#a3a29b; --card:#20201e; --line:#34332f; --say:#7db7f2; --vlm:#f0a072; --dense:#a6d36f; } }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system, "Apple SD Gothic Neo", sans-serif; }
+main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
+h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:17px; margin:28px 0 10px; }
+.sub { color:var(--muted); margin-bottom:16px; }
+table.sum { border-collapse:collapse; margin:8px 0 4px; } table.sum td, table.sum th { border:1px solid var(--line); padding:4px 10px; text-align:left; }
+.row { display:grid; grid-template-columns:64px 96px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid var(--line); align-items:start; }
+.row.quiet { opacity:.55; } .row.quiet img { width:48px; }
+.t { font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px; }
+img { width:96px; border-radius:4px; display:block; }
+.say { color:var(--say); font-weight:600; font-size:16px; }
+.tag { display:inline-block; font-size:12px; border:1px solid var(--line); border-radius:10px; padding:0 7px; margin:2px 4px 0 0; color:var(--muted); }
+.tag.vlm { color:var(--vlm); border-color:var(--vlm); } .tag.dense { color:var(--dense); border-color:var(--dense); }
+</style></head><body><main>
+<h1>314호로 가는 안내 시연</h1>
+<div class='sub'>경로: 입구 → 엘리베이터 (영상3) → 엘리베이터 하차 후 (영상1, 4층). 1초마다 1장을 보고, 애매하면 그 1초의 8장을 더 봄. VLM은 사건이 있을 때만.</div>
+<table class='sum'><tr><th>영상 길이</th><th>안내 문장</th><th>VLM 호출</th><th>8장을 다시 본 초</th><th>1초 처리 시간 중앙값 / 최대</th></tr>
+<tr><td>60초</td><td>5개</td><td>5번 (8%)</td><td>22초</td><td>0.87초 / 5.90초</td></tr></table>
+<h2>입구 → 엘리베이터 (영상3)</h2>
+<div class='row'><div class='t'>00초<br>5.90s</div><img src='frames_8fps/1_start_졸프_영상3/i0000.jpg' alt='' loading='lazy'><div><div class='say'>🔊 314호로 안내를 시작합니다. 314호는 3층입니다. 앞에 유리문이 있습니다. 문을 열고 들어가세요.</div><span class='tag dense'>8장 다시 봄: 흐림</span><span class='tag vlm'>VLM (경로 시작, 4.3초): scene_type=ENTRANCE, visible_path=ALL, door_ahead=GLASS_DOOR, elevator_visible=False, call_button_side=NONE</span></div></div>
+<div class='row quiet'><div class='t'>01초<br>0.33s</div><img src='frames_8fps/1_start_졸프_영상3/i0008.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>02초<br>1.20s</div><img src='frames_8fps/1_start_졸프_영상3/i0016.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>03초<br>1.27s</div><img src='frames_8fps/1_start_졸프_영상3/i0024.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 깨진 번호</span></div></div>
+<div class='row quiet'><div class='t'>04초<br>0.40s</div><img src='frames_8fps/1_start_졸프_영상3/i0032.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>05초<br>0.25s</div><img src='frames_8fps/1_start_졸프_영상3/i0040.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>06초<br>0.30s</div><img src='frames_8fps/1_start_졸프_영상3/i0048.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>07초<br>0.29s</div><img src='frames_8fps/1_start_졸프_영상3/i0056.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>08초<br>0.26s</div><img src='frames_8fps/1_start_졸프_영상3/i0064.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row'><div class='t'>09초<br>4.45s</div><img src='frames_8fps/1_start_졸프_영상3/i0072.jpg' alt='' loading='lazy'><div><div class='say'>🔊 복도가 앞으로 이어집니다. 계속 직진하세요.</div><span class='tag vlm'>VLM (근거 없이 10초, 4.1초): scene_type=CORRIDOR, visible_path=ALL, door_ahead=DOOR, elevator_visible=True, call_button_side=RIGHT</span></div></div>
+<div class='row quiet'><div class='t'>10초<br>0.28s</div><img src='frames_8fps/1_start_졸프_영상3/i0080.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>11초<br>1.96s</div><img src='frames_8fps/1_start_졸프_영상3/i0088.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>12초<br>0.32s</div><img src='frames_8fps/1_start_졸프_영상3/i0096.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>13초<br>2.56s</div><img src='frames_8fps/1_start_졸프_영상3/i0104.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>14초<br>2.37s</div><img src='frames_8fps/1_start_졸프_영상3/i0112.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row'><div class='t'>15초<br>4.77s</div><img src='frames_8fps/1_start_졸프_영상3/i0120.jpg' alt='' loading='lazy'><div><div class='say'>🔊 앞에 엘리베이터가 있습니다. 엘리베이터를 타고 3층을 누르세요.</div><span class='tag vlm'>VLM (엘리베이터 후보가 계속 보임, 4.5초): scene_type=ELEVATOR_HALL, visible_path=ALL, door_ahead=NONE, elevator_visible=True, call_button_side=NONE</span></div></div>
+<div class='row quiet'><div class='t'>16초<br>1.76s</div><img src='frames_8fps/1_start_졸프_영상3/i0128.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>17초<br>0.36s</div><img src='frames_8fps/1_start_졸프_영상3/i0136.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>18초<br>2.13s</div><img src='frames_8fps/1_start_졸프_영상3/i0144.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>19초<br>1.77s</div><img src='frames_8fps/1_start_졸프_영상3/i0152.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>20초<br>2.36s</div><img src='frames_8fps/1_start_졸프_영상3/i0160.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>21초<br>2.24s</div><img src='frames_8fps/1_start_졸프_영상3/i0168.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>22초<br>3.03s</div><img src='frames_8fps/1_start_졸프_영상3/i0176.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>23초<br>2.22s</div><img src='frames_8fps/1_start_졸프_영상3/i0184.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>24초<br>0.49s</div><img src='frames_8fps/1_start_졸프_영상3/i0192.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>25초<br>2.78s</div><img src='frames_8fps/1_start_졸프_영상3/i0200.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 문패 한글만</span></div></div>
+<div class='row quiet'><div class='t'>26초<br>1.91s</div><img src='frames_8fps/1_start_졸프_영상3/i0208.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 문패 한글만</span></div></div>
+<div class='row quiet'><div class='t'>27초<br>0.95s</div><img src='frames_8fps/1_start_졸프_영상3/i0216.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<h2>엘리베이터 하차 후 (영상1, 4층)</h2>
+<div class='row'><div class='t'>00초<br>4.37s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0000.jpg' alt='' loading='lazy'><div><div class='say'>🔊 엘리베이터에서 내렸습니다. 복도가 여러 방향으로 이어집니다. 문패를 확인하며 천천히 이동하세요.</div><div class='say'>🔊 여기는 4층입니다. 314호는 3층에 있습니다. 엘리베이터로 돌아가 3층을 누르세요.</div><span class='tag'>읽은 호실 410</span><span class='tag vlm'>VLM (엘리베이터에서 내린 직후, 4.0초): scene_type=ROOM_DOOR, visible_path=ALL, door_ahead=DOOR, elevator_visible=False, call_button_side=NONE</span></div></div>
+<div class='row quiet'><div class='t'>01초<br>0.25s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0008.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>02초<br>0.28s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0016.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>03초<br>1.01s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0024.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>04초<br>1.92s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0032.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>05초<br>0.38s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0040.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>06초<br>0.28s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0048.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>07초<br>0.31s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0056.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>08초<br>0.33s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0064.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>09초<br>4.16s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0072.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>10초<br>3.27s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0080.jpg' alt='' loading='lazy'><div><span class='tag'>읽은 호실 407</span><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>11초<br>1.10s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0088.jpg' alt='' loading='lazy'><div><span class='tag'>읽은 호실 407</span></div></div>
+<div class='row quiet'><div class='t'>12초<br>0.46s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0096.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>13초<br>3.59s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0104.jpg' alt='' loading='lazy'><div><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>14초<br>0.35s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0112.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>15초<br>0.78s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0120.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>16초<br>0.25s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0128.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>17초<br>0.22s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0136.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>18초<br>0.22s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0144.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>19초<br>0.27s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0152.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>20초<br>0.21s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0160.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row'><div class='t'>21초<br>4.58s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0168.jpg' alt='' loading='lazy'><div><span class='tag vlm'>VLM (근거 없이 10초, 4.3초): scene_type=CORRIDOR, visible_path=FORWARD, door_ahead=DOOR, elevator_visible=False, call_button_side=NONE</span></div></div>
+<div class='row quiet'><div class='t'>22초<br>4.17s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0176.jpg' alt='' loading='lazy'><div><span class='tag'>읽은 호실 412</span><span class='tag dense'>8장 다시 봄: 호실 점수 중간</span></div></div>
+<div class='row quiet'><div class='t'>23초<br>0.31s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0184.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>24초<br>0.66s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0192.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>25초<br>0.28s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0200.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>26초<br>0.40s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0208.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>27초<br>0.34s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0216.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>28초<br>3.46s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0224.jpg' alt='' loading='lazy'><div><span class='tag'>읽은 호실 413</span><span class='tag dense'>8장 다시 봄: 깨진 번호</span></div></div>
+<div class='row quiet'><div class='t'>29초<br>0.25s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0232.jpg' alt='' loading='lazy'><div></div></div>
+<div class='row quiet'><div class='t'>30초<br>3.92s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0240.jpg' alt='' loading='lazy'><div><span class='tag'>읽은 호실 413</span><span class='tag dense'>8장 다시 봄: 흐림</span></div></div>
+<div class='row quiet'><div class='t'>31초<br>1.07s</div><img src='frames_8fps/2a_after_elevator_졸프_영상1/i0248.jpg' alt='' loading='lazy'><div><span class='tag'>읽은 호실 413</span></div></div>
+</main></body></html>

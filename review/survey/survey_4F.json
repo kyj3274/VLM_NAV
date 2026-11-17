@@ -1,0 +1,897 @@
+{
+ "4F_001": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_002": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_003": {
+  "landmarks": [
+   "안내판",
+   "소화전",
+   "소화기",
+   "출입문",
+   "복도끝",
+   "기둥"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_004": {
+  "landmarks": [
+   "출입문",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_005": {
+  "landmarks": [
+   "출입문",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_006": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [
+   "406"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_007": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_008": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_009": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_010": {
+  "landmarks": [
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "407"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_011": {
+  "landmarks": [
+   "게시판"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_012": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_013": {
+  "landmarks": [
+   "기둥"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_014": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "405"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_015": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_016": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_017": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_018": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_019": {
+  "landmarks": [
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_020": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [
+   "406"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_021": {
+  "landmarks": [
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "407"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_022": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "407"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_023": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_024": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [
+   "406"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_025": {
+  "landmarks": [
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "412"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_026": {
+  "landmarks": [
+   "소화기",
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_027": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "404"
+  ],
+  "arrows": [
+   {
+    "target": "UNKNOWN",
+    "value": "10시"
+   }
+  ],
+  "floor_text": []
+ },
+ "4F_028": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_029": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_030": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_031": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_032": {
+  "landmarks": [
+   "출입문",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_033": {
+  "landmarks": [
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_034": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [
+   "412"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_035": {
+  "landmarks": [
+   "엘리베이터",
+   "비상구표시",
+   "출입문",
+   "복도끝"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": [
+   "4F"
+  ]
+ },
+ "4F_036": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_037": {
+  "landmarks": [
+   "엘리베이터",
+   "화장실표시",
+   "화장실입구",
+   "복도끝"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": [
+   "4F"
+  ]
+ },
+ "4F_038": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [
+   "405"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_039": {
+  "landmarks": [
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_040": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [
+   "406"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_041": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_042": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_043": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "404"
+  ],
+  "arrows": [
+   {
+    "target": "UNKNOWN",
+    "value": "10시"
+   }
+  ],
+  "floor_text": []
+ },
+ "4F_044": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "414"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_045": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_046": {
+  "landmarks": [
+   "엘리베이터",
+   "화장실표시",
+   "화장실입구",
+   "소화기",
+   "출입문",
+   "복도끝",
+   "기둥",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": [
+   "4F"
+  ]
+ },
+ "4F_047": {
+  "landmarks": [
+   "소화전",
+   "소화기",
+   "복도끝",
+   "기둥"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_048": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "414"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_049": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_050": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_051": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_052": {
+  "landmarks": [
+   "게시판"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_053": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "게시판",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_054": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_055": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "405"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_056": {
+  "landmarks": [
+   "엘리베이터",
+   "비상구표시",
+   "안내판",
+   "소화전",
+   "소화기",
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_057": {
+  "landmarks": [
+   "엘리베이터",
+   "비상구표시",
+   "안내판",
+   "소화전",
+   "소화기",
+   "복도끝"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_058": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "411"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_059": {
+  "landmarks": [
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_060": {
+  "landmarks": [
+   "소화전",
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_061": {
+  "landmarks": [
+   "비상구표시",
+   "소화기",
+   "출입문",
+   "사물함",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_062": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [
+   "415"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_063": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_064": {
+  "landmarks": [
+   "안내판",
+   "소화기",
+   "출입문",
+   "복도끝",
+   "기둥",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_065": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_066": {
+  "landmarks": [
+   "출입문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_067": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [
+   "411"
+  ],
+  "arrows": [
+   {
+    "target": "UNKNOWN",
+    "value": "3시"
+   }
+  ],
+  "floor_text": []
+ },
+ "4F_068": {
+  "landmarks": [
+   "출입문",
+   "복도끝",
+   "기둥"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_069": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [],
+  "arrows": [
+   {
+    "target": "UNKNOWN",
+    "value": "3시"
+   }
+  ],
+  "floor_text": []
+ },
+ "4F_070": {
+  "landmarks": [
+   "엘리베이터",
+   "화장실표시",
+   "화장실입구",
+   "소화기",
+   "복도끝"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": [
+   "4F"
+  ]
+ },
+ "4F_071": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_072": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_073": {
+  "landmarks": [
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_074": {
+  "landmarks": [
+   "소화기",
+   "출입문",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_075": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "411"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_076": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "411"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_077": {
+  "landmarks": [
+   "비상구표시",
+   "출입문",
+   "게시판",
+   "액자"
+  ],
+  "rooms": [
+   "411"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_078": {
+  "landmarks": [
+   "정수기",
+   "유리문"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_079": {
+  "landmarks": [
+   "계단",
+   "소화전",
+   "소화기",
+   "정수기"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_080": {
+  "landmarks": [
+   "출입문",
+   "게시판"
+  ],
+  "rooms": [
+   "401"
+  ],
+  "arrows": [],
+  "floor_text": []
+ },
+ "4F_081": {
+  "landmarks": [
+   "출입문",
+   "게시판",
+   "사물함"
+  ],
+  "rooms": [],
+  "arrows": [],
+  "floor_text": []
+ }
+}

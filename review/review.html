@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>표지판 OCR 검수</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #e2e2dd; --accent: #2f6fdb; --accent-soft: #e6eefc;
+    --ok: #1f8a4c; --ok-soft: #e3f4ea; --bad: #c2412d; --bad-soft: #fbe9e5;
+    --warn: #a86b00; --warn-soft: #fbf1dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615; --panel: #1f1f1d; --text: #ececE8; --muted: #9a9a93;
+      --line: #33332f; --accent: #6f9cf0; --accent-soft: #1f2b44;
+      --ok: #5cc98a; --ok-soft: #1a3326; --bad: #ef7c68; --bad-soft: #3a211c;
+      --warn: #e0a83c; --warn-soft: #3a2f17;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Apple SD Gothic Neo", "Pretendard", system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 10px 16px;
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; }
+  .tabs button, .btn { border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 5px 11px; border-radius: 6px; cursor: pointer; font: inherit; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  select, input[type=text], textarea { font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  .progress { color: var(--muted); }
+  .bar { width: 120px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .bar > i { display: block; height: 100%; background: var(--ok); }
+  .spacer { flex: 1; }
+
+  main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+  .review { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .review { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .imgwrap { position: sticky; top: 64px; }
+  .imgbox { background: #000; border-radius: 8px; overflow: auto; max-height: calc(100vh - 150px); cursor: zoom-in; }
+  .imgbox img { display: block; width: 100%; height: auto; }
+  .imgbox.zoom { cursor: zoom-out; }
+  .imgbox.zoom img { width: 200%; max-width: none; }
+  .meta { display: flex; justify-content: space-between; align-items: center; margin: 8px 2px 0; color: var(--muted); gap: 8px; flex-wrap: wrap; }
+  .nav { display: flex; gap: 6px; align-items: center; }
+  .title { font-size: 18px; font-weight: 650; color: var(--text); }
+
+  .gt label { font-weight: 600; display: block; margin-bottom: 6px; }
+  .gt textarea { width: 100%; min-height: 64px; resize: vertical; }
+  .gt .row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .saved { color: var(--ok); font-size: 12px; }
+
+  .answers { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .ans { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .ans .head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .ans .name { font-weight: 600; }
+  .ans .lat { color: var(--muted); font-size: 12px; }
+  .ans .score { margin-left: auto; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--line); }
+  .score.good { background: var(--ok-soft); color: var(--ok); }
+  .score.mid { background: var(--warn-soft); color: var(--warn); }
+  .score.low { background: var(--bad-soft); color: var(--bad); }
+  .ans .text { word-break: break-word; }
+  .tok { display: inline-block; padding: 0 5px; margin: 1px 2px 1px 0; border-radius: 4px; background: var(--bg); }
+  .tok.hit { background: var(--ok-soft); color: var(--ok); }
+  .tok.miss { background: var(--bad-soft); color: var(--bad); }
+  .status { color: var(--muted); font-style: italic; }
+  .status.fail { color: var(--bad); }
+  .use { font-size: 12px; padding: 2px 8px; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .tablewrap { overflow-x: auto; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 12px; line-height: 1.6; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .thumb { border: 2px solid transparent; border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--panel); position: relative; }
+  .thumb img { width: 100%; height: 110px; object-fit: cover; display: block; }
+  .thumb span { position: absolute; left: 6px; bottom: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+  .thumb.done { border-color: var(--ok); }
+  .thumb.done::after { content: "✓"; position: absolute; top: 4px; right: 8px; color: #fff; background: var(--ok); border-radius: 50%; width: 20px; height: 20px; text-align: center; font-size: 13px; line-height: 20px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>표지판 OCR 검수</h1>
+  <div class="tabs">
+    <button data-tab="review" class="on">검수</button>
+    <button data-tab="grid">사진 목록</button>
+    <button data-tab="score">채점 결과</button>
+  </div>
+  <select id="floorSel">
+    <option value="all">전체 층</option>
+    <option value="3rdFloor">3층</option>
+    <option value="4thFloor">4층</option>
+    <option value="5thFloor">5층</option>
+  </select>
+  <label><input type="checkbox" id="todoOnly"> 미입력만</label>
+  <span class="spacer"></span>
+  <span class="progress"><span id="progText"></span> <span class="bar"><i id="progBar"></i></span></span>
+  <button class="btn" id="exportBtn">CSV 저장</button>
+  <label class="btn">CSV 불러오기<input type="file" id="importFile" accept=".csv" hidden></label>
+</header>
+
+<main>
+  <section id="tab-review" class="review">
+    <div class="imgwrap">
+      <div class="imgbox" id="imgbox"><img id="photo" alt=""></div>
+      <div class="meta">
+        <span class="title" id="photoTitle"></span>
+        <span id="dupInfo"></span>
+        <span class="nav">
+          <button class="btn" id="prevBtn">← 이전</button>
+          <span id="posText"></span>
+          <button class="btn" id="nextBtn">다음 →</button>
+        </span>
+      </div>
+    </div>
+    <div>
+      <div class="card gt">
+        <label for="gtInput">정답 (사진에서 실제로 읽히는 글자)</label>
+        <textarea id="gtInput" placeholder="예: 404, 강의실 1, EXIT"></textarea>
+        <div class="row">
+          <button class="btn" id="noneBtn">글자 없음</button>
+          <button class="btn" id="unsureBtn">판단 어려움</button>
+          <button class="btn" id="clearBtn">지우기</button>
+          <span class="spacer"></span>
+          <span id="savedMark" class="saved"></span>
+          <button class="btn primary" id="saveNextBtn">저장 후 다음 (⌘/Ctrl+Enter)</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          글자 덩어리는 쉼표(,)로 구분합니다. 띄어쓰기, 대소문자, 숫자 뒤 "호"는 채점할 때 무시하고,
+          모델이 쉼표 없이 붙여 써도 정답 덩어리가 답 안에 들어 있으면 맞은 것으로 봅니다.
+          입력하면 자동 저장되고, 입력란 밖에서는 ← → 키로 이동합니다. 사진을 누르면 확대됩니다.
+        </div>
+      </div>
+      <div class="answers" id="answers"></div>
+    </div>
+  </section>
+
+  <section id="tab-grid" class="hidden">
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section id="tab-score" class="hidden">
+    <div class="card">
+      <div class="tablewrap"><table id="scoreTable"></table></div>
+      <div class="note">
+        정답을 입력한 사진만 채점합니다. "판단 어려움"으로 표시한 사진은 빠집니다.<br>
+        <b>재현율</b>: 정답 글자 덩어리 중 모델이 맞힌 비율. <b>정밀도</b>: 모델이 낸 덩어리 중 정답에 있는 비율.
+        <b>F1</b>: 둘의 조화평균. 정답이 "글자 없음"인 사진은 모델도 "글자 없음"이면 1점, 아니면 0점입니다.<br>
+        <b>F1(전체)</b>는 시간 초과나 오류를 0점으로 넣은 값이고, <b>F1(응답)</b>은 모델이 답을 낸 사진만으로 계산한 값입니다.
+        CPU에서 돈 모델은 시간 초과가 많아서 F1(전체)가 불리하게 나옵니다.
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  const DATA = window.REVIEW_DATA;
+  const STORE_KEY = "signs-gt-v1";
+  const NONE = "글자 없음";
+  const UNSURE = "판단 어려움";
+
+  let labels = {};
+  try { labels = JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); } catch (e) { labels = {}; }
+  const persist = () => {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(labels)); } catch (e) {}
+  };
+
+  const $ = (id) => document.getElementById(id);
+  let view = DATA.items;
+  let pos = 0;
+
+  // ---------- 채점 ----------
+  const norm = (t) => t.toLowerCase()
+    .replace(/[\s"'`“”‘’<>\[\](){}.·:]/g, "")
+    .replace(/(\d)호(실)?$/, "$1");
+  const tokens = (s) => {
+    if (!s || s.trim() === NONE) return [];
+    return [...new Set(s.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean))];
+  };
+  // 쉼표 구분을 안 지킨 답("404 강의실1")도 맞게 보도록 포함 관계로 채점:
+  //   재현율 = 정답 덩어리 중 모델 답 전체 안에 들어 있는 비율
+  //   정밀도 = 모델 덩어리 중 정답 전체 안에 들어 있는 비율
+  function score(gtText, ans) {
+    if (!ans || ans.status !== "ok") return null;
+    const gt = tokens(gtText).map(norm).filter(Boolean);
+    const out = tokens(ans.text);
+    const outN = out.map(norm);
+    // 한 글자짜리("4", "5")는 아무 데나 포함돼 버리므로 덩어리가 똑같을 때만 인정
+    const found = (t, list) => (t.length <= 1 ? list.includes(t) : list.join("").includes(t));
+    const hits = outN.map((t) => !!t && found(t, gt));
+    if (gt.length === 0) {
+      const f = outN.filter(Boolean).length === 0 ? 1 : 0;
+      return { p: f, r: f, f1: f, hits };
+    }
+    const outU = [...new Set(outN.filter(Boolean))];
+    if (outU.length === 0) return { p: 0, r: 0, f1: 0, hits };
+    const p = outU.filter((t) => found(t, gt)).length / outU.length;
+    const gtU = [...new Set(gt)];
+    const r = gtU.filter((t) => found(t, outU)).length / gtU.length;
+    return { p, r, f1: p + r ? (2 * p * r) / (p + r) : 0, hits };
+  }
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const pct = (x) => (x == null ? "–" : Math.round(x * 100) + "%");
+
+  // ---------- 화면 ----------
+  function applyFilter() {
+    const floor = $("floorSel").value, todo = $("todoOnly").checked;
+    const cur = view[pos] && view[pos].id;
+    view = DATA.items.filter((it) =>
+      (floor === "all" || it.floor === floor) && (!todo || !labels[it.id] || it.id === cur));
+    pos = Math.max(0, view.findIndex((it) => it.id === cur));
+    render(); renderGrid(); renderProgress();
+  }
+
+  function renderProgress() {
+    const done = DATA.items.filter((it) => labels[it.id]).length;
+    $("progText").textContent = `입력 ${done} / ${DATA.items.length}`;
+    $("progBar").style.width = (100 * done / DATA.items.length) + "%";
+  }
+
+  const floorKo = (f) => f.replace("rdFloor", "층").replace("thFloor", "층");
+
+  function render() {
+    const it = view[pos];
+    if (!it) { $("photoTitle").textContent = "표시할 사진이 없습니다"; $("answers").innerHTML = ""; return; }
+    $("photo").src = it.src;
+    $("photoTitle").textContent = `${floorKo(it.floor)} · ${it.image}`;
+    $("dupInfo").textContent = it.duplicates.length ? `같은 사진: ${it.duplicates.join(", ")}` : "";
+    $("posText").textContent = `${pos + 1} / ${view.length}`;
+    const gt = labels[it.id] || "";
+    if (document.activeElement !== $("gtInput")) $("gtInput").value = gt;
+    $("savedMark").textContent = gt ? "저장됨" : "";
+    renderAnswers();
+  }
+
+  function renderAnswers() {
+    const it = view[pos];
+    const gt = $("gtInput").value;
+    const graded = gt && gt !== UNSURE;
+    $("answers").innerHTML = DATA.models.map((name, i) => {
+      const a = it.answers[i];
+      let body, badge = "", lat = "";
+      if (!a) body = `<span class="status">이 층은 실행하지 않음</span>`;
+      else if (a.status === "timeout") body = `<span class="status fail">시간 초과 (60초)</span>`;
+      else if (a.status === "error") body = `<span class="status fail">오류: ${esc(a.error || "")}</span>`;
+      else {
+        const s = graded ? score(gt, a) : null;
+        const toks = tokens(a.text);
+        body = toks.length
+          ? toks.map((t, k) => `<span class="tok ${s ? (s.hits[k] ? "hit" : "miss") : ""}">${esc(t)}</span>`).join("")
+          : `<span class="status">글자 없음</span>`;
+        if (s) badge = `<span class="score ${s.f1 >= .8 ? "good" : s.f1 >= .4 ? "mid" : "low"}">F1 ${pct(s.f1)}</span>`;
+      }
+      if (a && a.latency != null) lat = `<span class="lat">${a.latency}초</span>`;
+      const useBtn = a && a.status === "ok"
+        ? `<button class="btn use" data-use="${i}">이 답을 정답으로</button>` : "";
+      return `<div class="ans"><div class="head"><span class="name">${esc(name)}</span>${lat}${badge}</div>
+        <div class="text">${body}</div>${useBtn ? `<div style="margin-top:6px">${useBtn}</div>` : ""}</div>`;
+    }).join("");
+  }
+
+  function renderGrid() {
+    $("grid").innerHTML = view.map((it, i) =>
+      `<div class="thumb ${labels[it.id] ? "done" : ""}" data-i="${i}">
+         <img loading="lazy" src="${it.src}" alt=""><span>${floorKo(it.floor)} ${it.image}</span></div>`).join("");
+  }
+
+  function renderScore() {
+    const rows = DATA.models.map((name, i) => {
+      let n = 0, answered = 0, fail = 0, notRun = 0, sumAll = 0, sumAns = 0, sumP = 0, sumR = 0;
+      for (const it of DATA.items) {
+        const gt = labels[it.id];
+        if (!gt || gt === UNSURE) continue;
+        const a = it.answers[i];
+        if (!a) { notRun++; continue; }
+        n++;
+        const s = score(gt, a);
+        if (!s) { fail++; continue; }
+        answered++; sumAll += s.f1; sumAns += s.f1; sumP += s.p; sumR += s.r;
+      }
+      return `<tr><td>${esc(name)}</td><td class="num">${n}</td><td class="num">${fail}</td>
+        <td class="num">${answered ? pct(sumP / answered) : "–"}</td>
+        <td class="num">${answered ? pct(sumR / answered) : "–"}</td>
+        <td class="num"><b>${answered ? pct(sumAns / answered) : "–"}</b></td>
+        <td class="num">${n ? pct(sumAll / n) : "–"}</td>
+        <td class="num">${notRun}</td></tr>`;
+    }).join("");
+    $("scoreTable").innerHTML = `<tr><th>모델</th><th>채점 사진</th><th>시간 초과·오류</th>
+      <th>정밀도(응답)</th><th>재현율(응답)</th><th>F1(응답)</th><th>F1(전체)</th><th>미실행 층 사진</th></tr>${rows}`;
+  }
+
+  // ---------- 동작 ----------
+  function setLabel(v) {
+    const it = view[pos]; if (!it) return;
+    v = v.trim();
+    if (v) labels[it.id] = v; else delete labels[it.id];
+    persist(); $("savedMark").textContent = v ? "저장됨" : ""; renderProgress();
+  }
+  function go(d) {
+    if (!view.length) return;
+    pos = Math.min(view.length - 1, Math.max(0, pos + d));
+    $("imgbox").classList.remove("zoom");
+    render();
+    $("imgbox").scrollTop = 0;
+  }
+
+  $("gtInput").addEventListener("input", (e) => { setLabel(e.target.value); renderAnswers(); });
+  $("noneBtn").onclick = () => { $("gtInput").value = NONE; setLabel(NONE); renderAnswers(); };
+  $("unsureBtn").onclick = () => { $("gtInput").value = UNSURE; setLabel(UNSURE); renderAnswers(); };
+  $("clearBtn").onclick = () => { $("gtInput").value = ""; setLabel(""); renderAnswers(); $("gtInput").focus(); };
+  $("saveNextBtn").onclick = () => { setLabel($("gtInput").value); if ($("todoOnly").checked) applyFilter(); go(1); };
+  $("prevBtn").onclick = () => go(-1);
+  $("nextBtn").onclick = () => go(1);
+  $("imgbox").onclick = () => $("imgbox").classList.toggle("zoom");
+  $("answers").addEventListener("click", (e) => {
+    const i = e.target.dataset.use; if (i == null) return;
+    const a = view[pos].answers[+i];
+    $("gtInput").value = a.text; setLabel(a.text); renderAnswers(); $("gtInput").focus();
+  });
+  $("grid").addEventListener("click", (e) => {
+    const t = e.target.closest(".thumb"); if (!t) return;
+    pos = +t.dataset.i; showTab("review"); render();
+  });
+  $("floorSel").onchange = applyFilter;
+  $("todoOnly").onchange = applyFilter;
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); $("saveNextBtn").click(); return; }
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+    if (e.key === "ArrowLeft") go(-1);
+    if (e.key === "ArrowRight") go(1);
+  });
+
+  function showTab(name) {
+    document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+    for (const t of ["review", "grid", "score"]) $("tab-" + t).classList.toggle("hidden", t !== name);
+    if (name === "score") renderScore();
+    if (name === "grid") renderGrid();
+  }
+  document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
+
+  // ---------- CSV ----------
+  const csvCell = (s) => '"' + String(s).replace(/"/g, '""') + '"';
+  $("exportBtn").onclick = () => {
+    const lines = ["floor,image,gt"];
+    for (const it of DATA.items) if (labels[it.id]) lines.push([it.floor, it.image, labels[it.id]].map(csvCell).join(","));
+    const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `signs_gt_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
+  function parseCSV(text) {
+    const rows = []; let row = [], cell = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; }
+      else if (c === '"') q = true;
+      else if (c === ",") { row.push(cell); cell = ""; }
+      else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+      else cell += c;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  $("importFile").onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const rows = parseCSV((await f.text()).replace(/^﻿/, ""));
+    let added = 0, conflict = 0;
+    for (const [floor, image, gt] of rows.slice(1)) {
+      if (!floor || !image || !gt) continue;
+      const id = `${floor}/${image}`;
+      if (labels[id] && labels[id] !== gt) conflict++;
+      else if (!labels[id]) { labels[id] = gt; added++; }
+    }
+    persist(); applyFilter();
+    alert(`불러오기 완료: 새로 추가 ${added}개` + (conflict ? `, 이미 다른 값이 있어 건너뜀 ${conflict}개` : ""));
+    e.target.value = "";
+  };
+
+  renderProgress(); render();
+})();
+</script>
+</body>
+</html>
