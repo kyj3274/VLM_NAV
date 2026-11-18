@@ -6,10 +6,13 @@
   → 확대 재확인이 일치하면 한 번의 호출로 3점(읽기 2 + 재확인 1)이 되어 확정된다.
   (VLM_NAV: 읽힌 횟수 최대 3 + 크고 또렷함 + 문 옆 + 가까운 번호. Claude는 한 장을 한 번만 보므로 횟수는 2까지만 센다.)
 확대 재확인이 다른 번호를 읽으면 그 걸음의 읽기는 세지 않는다.
+목적지 번호(또는 목적지 이름)만은 점수와 함께 서로 다른 호출(다른 걸음의 사진) 2번에서 읽혀야 확정한다
+(2026-11-18 사용자 지시: 확대 재확인은 같은 사진이라 두 번째 호출로 치지 않음. 그 전에는 '확인 중'까지만 말함).
 사건 기록은 글 한 줄씩이라 나중에 텍스트 모델에 그대로 넣을 수 있다 (text()).
 """
 
 CONFIRM = 3      # 확정에 필요한 믿음 점수
+TARGET_CALLS = 2 # 목적지 번호는 서로 다른 호출(걸음) 몇 번에서 읽혀야 확정하나
 READS_MAX = 2    # 같은 번호를 여러 호출에서 읽은 횟수는 2점까지
 FRONT_M = 3.0    # '정면 가까이': 화면 가운데이고 이 거리(m) 이내
 NEAR_DIFF = 10   # '가까운 번호': 확정한 같은 층 번호와 차이 10 이내
@@ -52,15 +55,16 @@ class Memory:
         p = self.plates.setdefault((self.seg, room), {"room": room, "first": t, "last": -99, "n": 0, "total": 0,
                                                        "front": False, "door": False, "near": False, "recheck": False,
                                                        "ok": False, "ok_t": None, "min_m": None, "side": None,
-                                                       "rejected": 0, "reads": []})
+                                                       "rejected": 0, "reads": [], "calls": 0})
         p["reads"] = (p["reads"] + [{"t": t, "side": side, "m": m, "on": on, "recheck": recheck}])[-8:]
         if recheck is False:
             p["rejected"] += 1
             return p
         if t - p["last"] > FORGET:
-            p["n"] = 0
+            p["n"] = p["calls"] = 0
         if p["last"] != t:
             p["n"] += 1
+            p["calls"] += 1  # 서로 다른 호출(걸음)에서 읽힌 횟수 (확대 재확인 가점 없음)
             if recheck is True:  # 확대 재확인에서 같은 번호 = 두 번째 읽기 (2026-11-18 사용자 지시: 한 번의 호출로 확정)
                 p["n"] += 1
         p["total"] += 1
@@ -76,9 +80,10 @@ class Memory:
         elif p["side"] is None:
             p["side"] = side
         p["trust"] = min(p["n"], READS_MAX) + p["front"] + p["door"] + p["near"] + p["recheck"]
-        if not p["ok"] and p["trust"] >= CONFIRM:
+        p["wait_calls"] = room == self.target and p["calls"] < TARGET_CALLS  # 목적지: 점수는 되지만 호출 2번 전
+        if not p["ok"] and p["trust"] >= CONFIRM and not p["wait_calls"]:
             p["ok"], p["ok_t"] = True, t
-            why = [f"{p['n']}번 읽음"] + (["정면 가까이"] if p["front"] else []) + (["문 옆"] if p["door"] else []) + \
+            why = [f"{p['n']}번 읽음"] + ([f"호출 {p['calls']}번"] if room == self.target else []) + (["정면 가까이"] if p["front"] else []) + (["문 옆"] if p["door"] else []) + \
                   (["본 번호와 가까움"] if p["near"] else []) + (["확대 재확인"] if p["recheck"] else [])
             self.event(t, f"{room}호 문패 확정 ({p['side']}, {', '.join(why)})")
         return p

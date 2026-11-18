@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>다시보기 기록</title>
+<style>
+:root { --bg:#f6f7f9; --card:#fff; --text:#15171a; --muted:#5d6570; --line:#dde1e6; --accent:#1f6feb; --ok:#1a7f37; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1115; --card:#181b21; --text:#eef0f3; --muted:#9aa3ad; --line:#2a2f37; --accent:#4c8dff; --ok:#3fb950; } }
+:root[data-theme="dark"] { --bg:#0f1115; --card:#181b21; --text:#eef0f3; --muted:#9aa3ad; --line:#2a2f37; --accent:#4c8dff; --ok:#3fb950; }
+* { box-sizing:border-box; }
+body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:15px/1.45 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+main { max-width:860px; margin:0 auto; display:grid; gap:12px; }
+input, button { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); }
+.wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+table { border-collapse:collapse; width:100%; }
+th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums; }
+th { color:var(--muted); font-weight:600; font-size:13px; }
+a { color:var(--accent); }
+.ok { color:var(--ok); font-weight:600; }
+.muted { color:var(--muted); }
+</style>
+</head>
+<body><main>
+  <h1 style="font-size:20px;margin:4px 0">다시보기 기록</h1>
+  <div><input id="code" type="password" placeholder="접속 코드" aria-label="접속 코드"> <button id="go">불러오기</button> <span id="msg" class="muted"></span></div>
+  <div class="wrap"><table><thead><tr><th>세션</th><th>목적지</th><th>화면</th><th>걸음</th><th>안내</th><th>결과</th><th>크레딧</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <p class="muted">기록을 누르면 걸음마다 보낸 사진·안내·Claude가 본 것을 넘겨 보는 다시보기 화면이 새 탭에 열립니다.</p>
+</main>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+async function go() {
+  const code = $('code').value.trim();
+  try {
+    const r = await fetch('/api/records', { headers: { 'X-Access-Code': code } });
+    if (r.status === 401) { $('msg').textContent = '접속 코드가 맞지 않습니다'; return; }
+    const j = await r.json();
+    $('msg').textContent = `${j.records.length}개`;
+    $('rows').innerHTML = j.records.map((x) => `<tr><td><a target="_blank" href="/api/records/${encodeURIComponent(x.session_id)}/replay?code=${encodeURIComponent(code)}">${esc(x.session_id)}</a></td>` +
+      `<td>${esc(x.target)}호</td><td>${x.mode === 'file' ? '영상 파일' : '카메라'}${x.fake ? ' (가짜)' : ''}</td><td>${x.steps}</td><td>${x.says}</td>` +
+      `<td>${x.arrived ? '<span class="ok">도착</span>' : '-'}</td><td>${x.credit}</td></tr>`).join('');
+  } catch (e) { $('msg').textContent = String(e.message || e); }
+}
+$('go').addEventListener('click', go);
+const saved = load('nav_code');
+if (saved) { $('code').value = saved; go(); }
+</script>
+</body>
+</html>

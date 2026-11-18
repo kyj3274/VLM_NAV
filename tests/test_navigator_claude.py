@@ -60,11 +60,14 @@ def test_route_a_like():
     assert recs[6]["action"] == "직진" and recs[6]["say"] == ["엘리베이터가 1시 방향 약 5미터에 있습니다. 그쪽으로 천천히 가세요."]
     assert recs[7]["action"] == "엘리베이터 타기" and "3층을 누르세요" in " ".join(recs[7]["say"])
     assert "오른쪽 벽" in " ".join(recs[7]["say"])
-    nav.runner = ScriptRunner([O([("317", "C", 2.5, "door")])] * 2 + [O([("314", "C", 1.5, "door")])] * 3)
-    recs = run(nav, 4, seg="2")
+    nav.runner = ScriptRunner([O([("317", "C", 2.5, "door")])] * 2 + [O([("314", "C", 1.5, "door")])] * 4)
+    recs = run(nav, 5, seg="2")
     assert recs[0]["state"]["floor"] == "3" and recs[0]["action"] == "직진"
-    assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["멈춰 주세요, 확인 중입니다."]
-    assert recs[3]["action"] == "도착" and recs[3]["say"] == ["정면에 314호 문이 있습니다."]
+    # 목적지 번호: 첫 호출(재확인 일치 포함)은 '확인 중'까지만, 두 번째 호출에서 확정
+    assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["목적지 같습니다, 확인 중입니다."]
+    assert recs[2]["rooms"] == [] and recs[2]["recheck"]["match"] is True
+    assert recs[3]["say"] == ["멈춰 주세요, 확인 중입니다."]
+    assert recs[4]["action"] == "도착" and recs[4]["say"] == ["정면에 314호 문이 있습니다."]
     assert recs[0]["recheck"]["match"] is True  # 317: 읽기 + 재확인 일치 → 한 번에 확정
 
 
@@ -136,12 +139,25 @@ def test_floor_sign_one_call():
 
 
 def test_arrival_side_within_2m():
-    script = [O([("410", "L", 1.8, "door")])] * 2
+    script = [O([("410", "L", 1.8, "door")])] * 3
     nav = nv.Navigator(ScriptRunner(script), "410")
     exited(nav)
-    recs = run(nav, 2)
-    assert recs[0]["say"][-1] == "멈춰 주세요, 확인 중입니다."
-    assert recs[1]["action"] == "도착" and recs[1]["say"] == ["왼쪽 앞에 410호 문이 있습니다."]
+    recs = run(nav, 3)
+    assert recs[0]["say"][-1] == "목적지 같습니다, 확인 중입니다."
+    assert recs[1]["say"][-1] == "멈춰 주세요, 확인 중입니다."
+    assert recs[2]["action"] == "도착" and recs[2]["say"] == ["왼쪽 앞에 410호 문이 있습니다."]
+
+
+def test_target_needs_two_calls_but_floor_plate_one():
+    """415 오독 같은 경우: 일반 문패는 한 번의 호출(읽기+재확인 일치)로 확정, 목적지 번호는 다른 호출에서 한 번 더."""
+    nav = nv.Navigator(ScriptRunner([O([("412", "C", 2.5, "door"), ("410", "L", 3.0, "door")]), O(), O(),
+                                     O([("410", "L", 3.0, "door")])]), "410")
+    exited(nav)
+    recs = run(nav, 4)
+    assert recs[0]["rooms"] == ["412"] and recs[0]["state"]["floor"] == "4"
+    assert "목적지 같습니다, 확인 중입니다." in recs[0]["say"] and recs[0]["target_pending"]
+    assert recs[3]["rooms"] == ["410"] and "410호 문패가 11시 방향 약 3미터에 있습니다." in recs[3]["say"]
+    assert nav.mem.get("410")["calls"] == 2
 
 
 def test_live_time_clock():

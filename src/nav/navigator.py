@@ -99,12 +99,31 @@ class Navigator:
                    "elevator_said": False, "el_run": 0, "el_seen": False, "el_ready": None, "button": None,
                    "pending": None, "fs_last": None, "near_d": [], "trend_said": None, "target_seen": None,
                    "arr_run": 0, "last_say": 0, "loc": None, "assume1": False, "door_phase": False, "door_gone": 0,
-                   "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기"}
+                   "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기", "maybe_said": False}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
         self.mem.event(0, f"안내 시작 (목적지 {target})")
         self.si, self.sec, self.seq, self.seg_start = 0, 0, "", 0
+        self.announce = True  # 첫 걸음에 "○호로 안내를 시작합니다"를 말할지 (웹은 미리 말함)
+
+    def start_head(self):
+        """경로 시작 문장 앞부분. 웹은 '410호로 안내하겠습니다'를 이미 말했으므로 announce=False로 앞 문장을 뺀다."""
+        t, tf = self.target, self.tf
+        head = f"{t}호로 안내를 시작합니다. " if self.announce else ""
+        return head + (f"{t}호는 {tf}층입니다. " if tf else "")
+
+    def set_target(self, target):
+        """안내 중 목적지 변경 (웹). 목적지와 도착·진행 방향 상태만 새로 하고, 층·확정 문패·엘리베이터 기억은 둔다."""
+        st = self.st
+        self.target, self.tf = target, target[0] if ROOM.match(target) else None
+        self.mem.target = target
+        st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
+                  elevator_said=False, el_approach=False, el_ready=None)
+        if st["floor"] is not None:
+            st["wrong_floor"] = bool(self.tf) and st["floor"] != self.tf
+            st["act"] = ("엘리베이터로 돌아가기" if self.si > 0 else "직진") if st["wrong_floor"] else "직진"
+        self.mem.event(self.clock, f"목적지 변경: {target}")
 
     # ------------------------------------------------------------ 구간
     def new_segment(self, seq=""):
@@ -117,7 +136,7 @@ class Navigator:
             self.st.update(floor=None, wrong_floor=False, room=None, floor_rooms=[], elevator_said=False, el_run=0,
                            el_seen=False, el_ready=None, button=None, pending=None, fs_last=None, near_d=[],
                            trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None, assume1=False,
-                           door_phase=False, door_gone=0, arrow_last=None, el_approach=False)
+                           door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False)
 
     # ------------------------------------------------------------ 재확인 대상
     def recheck_pick(self, obs):
@@ -189,13 +208,11 @@ class Navigator:
         if first and si == 0:
             if obs["door_ahead"] != "none":  # 출입문 앞에서 시작: 문을 지나 들어가는 것이 먼저 (건물 입구 = 1층으로 가정)
                 kind = "유리문" if obs["door_ahead"] == "glass" else "문"
-                say.append(f"{target}호로 안내를 시작합니다." + (f" {target}호는 {tf}층입니다." if tf else "")
-                           + f" 앞에 {kind}이 있습니다. 문을 지나 들어가세요.")
+                say.append(self.start_head() + f"앞에 {kind}이 있습니다. 문을 지나 들어가세요.")
                 st.update(door_phase=True, assume1=True, act="문 통과")
             else:
                 st["loc"] = loc = {"until": clock + LOCATE_SEC, "asks": 0, "places": []}
-                say.append(f"{target}호로 안내를 시작합니다." + (f" {target}호는 {tf}층입니다." if tf else "")
-                           + " 지금 위치를 확인하겠습니다. 휴대폰을 앞으로 들고 천천히 좌우로 비춰 주세요.")
+                say.append(self.start_head() + "지금 위치를 확인하겠습니다. 휴대폰을 앞으로 들고 천천히 좌우로 비춰 주세요.")
                 st["act"] = "멈추고 둘러보기"
         if loc is not None:
             loc["places"].append(obs["place"])
@@ -375,11 +392,29 @@ class Navigator:
                     note["trend"] = f"{prev[0]}→{n0} 멀어짐"
 
         # ---- 목적지
-        tgt = None
-        if ROOM.match(target) and target in rooms and not st["wrong_floor"]:
-            tgt = src[target]
+        # 목적지 안전장치 (2026-11-18 사용자 지시): 목적지 번호·이름은 서로 다른 호출 2번에서 읽혀야 확정.
+        # 그 전에는 '확인 중'까지만 말한다 (3단계 겹쳐 보내기에서 415 오독이 한 번의 호출로 확정된 것을 보고 추가).
+        tgt, maybe = None, False
+        if ROOM.match(target) and not st["wrong_floor"]:
+            if target in rooms:
+                tgt = src[target]
+            else:
+                tr = self.mem.get(target)
+                maybe = bool(tr and tr["last"] == clock and not tr["ok"] and rflag.get(target) is not False
+                             and (st["floor"] in (None, tf)))
         elif not ROOM.match(target) and obs.get("dest", {}).get("seen"):
-            tgt = obs["dest"]
+            st["dest_calls"] = st.get("dest_calls", 0) + 1 if clock - st.get("dest_last", -99) <= nav_memory.FORGET else 1
+            st["dest_last"] = clock
+            if st["dest_calls"] >= nav_memory.TARGET_CALLS:
+                tgt = obs["dest"]
+            else:
+                maybe = True
+        if maybe and not st["arrived"]:
+            note["target_pending"] = True
+            if not st.get("maybe_said"):
+                say.append("목적지 같습니다, 확인 중입니다.")
+                st["maybe_said"] = True
+                st["act"] = "목적지 접근"
         if tgt:
             side, m = tgt["side"], tgt["m"]
             close = m is not None and m <= ARRIVE_M  # 정면이 아니어도 (사진 속 L/C/R은 모두 9~3시 안)

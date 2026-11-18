@@ -1,8 +1,9 @@
-"""웹 길안내 세션 하나(outputs/kyj/web_sessions/<세션>/)를 웹 화면과 같은 모양의 다시보기 HTML 한 장으로 만든다.
-1초마다 대표 사진, 그때 말한 안내, 층·호실·장면, VLM 호출, 버튼 기록(일시 정지·엘리베이터·끝내기)을 순서대로 넘겨 본다.
-사진은 줄여서 HTML 안에 넣으므로 파일 하나만 옮기면 어디서나 열린다.
+"""웹 길안내 세션 하나(outputs/web_sessions/<세션>/)를 웹 화면과 같은 모양의 다시보기 HTML 한 장으로 만든다.
+걸음마다 보낸 사진, 그때 말한 안내, 층·확정 문패·Claude가 본 것·확대 재확인, 버튼 기록을 순서대로 넘겨 본다.
+사진은 줄여서 HTML 안에 넣으므로 파일 하나만 옮기면 어디서나 열린다. (VLM_NAV web_replay.py 화면 구조 그대로, 내용만 Claude 인식으로)
 
-  python web_replay.py <세션 폴더> [--out replay.html]
+  .venv/bin/python src/nav/web_replay.py outputs/web_sessions/<세션> [--out replay.html]
+  웹에서는 /records → 기록을 누르면 서버가 이 함수로 바로 만든다.
 """
 
 import argparse
@@ -10,12 +11,17 @@ import base64
 import html
 import io
 import json
+import statistics
 from pathlib import Path
 
 from PIL import Image
 
-EVENT_SAY = {"start": "안내 시작", "pause": "일시 정지", "resume": "다시 시작", "segment": "엘리베이터에서 내림 (층·위치 다시 확인)",
-             "end": "안내를 끝냄"}
+EVENT_SAY = {"start": "안내 시작", "pause": "일시 정지", "resume": "다시 시작", "exited": "엘리베이터에서 내림 (층·위치 다시 확인)",
+             "end": "안내를 끝냄", "stop": "관찰자 비상 정지", "limit": "크레딧 한도로 멈춤", "destination": "목적지 변경",
+             "destination_retry": "목적지를 못 알아들음", "stale": "늦게 온 응답 버림", "repeat": "다시 듣기"}
+SIDE = {"L": "왼쪽", "C": "정면", "R": "오른쪽"}
+PLACE = {"corridor": "복도", "lobby": "로비", "elev_hall": "엘리베이터 앞", "entrance": "건물 출입문 앞", "junction": "복도 갈림길",
+         "room_door": "방 문 앞", "in_elev": "엘리베이터 안", "stairs": "계단 근처", "unknown": "모름"}
 
 
 def thumb(p, side=560):
@@ -27,34 +33,32 @@ def thumb(p, side=560):
 
 
 def load(d):
-    """log.jsonl → 화면 한 칸씩(초 기록 또는 버튼 기록). 예전 기록(버튼 기록 없음)도 읽는다."""
+    """log.jsonl → 화면 한 칸씩(걸음 기록 또는 버튼 기록)."""
     items, imgs = [], {}
-    dump = {}  # 예전 기록은 raw가 없으므로 web_ocr_dump.py 결과가 있으면 대신 씀
-    if (d / "ocr_dump.jsonl").is_file():
-        dump = {x["frame"]: x for x in map(json.loads, open(d / "ocr_dump.jsonl", encoding="utf-8"))}
     for line in open(d / "log.jsonl", encoding="utf-8"):
-        r = json.loads(line)
-        if "raw" not in r and r.get("key_frame") in dump:
-            r["raw"] = dump[r["key_frame"]]
-        if "event" in r:
-            items.append({"kind": "event", "event": r["event"], "wall": r.get("wall"), "target": r.get("target"),
-                          "mode": r.get("mode"), "key": r.get("key"), "quality": r.get("quality"), "camera": r.get("camera"), "pick": r.get("pick")})
+        if not line.strip():
             continue
-        k = r["key_frame"]
-        if k not in imgs and (d / k).is_file():
-            imgs[k] = thumb(d / k)
-        st = r["state"]
-        items.append({"kind": "step", "img": k, "seg": r.get("segment", int(r["seq"].split("_")[-1])), "sec": r["sec"],
+        r = json.loads(line)
+        if "event" in r:
+            items.append({"kind": "event", **{k: r.get(k) for k in ("event", "wall", "target", "mode", "heard", "source", "fake",
+                                                                    "reason")}, "seq": r.get("web_seq")})
+            continue
+        k = r.get("frame") or r["key_frame"]
+        if k not in imgs and (d / "frames" / k).is_file():
+            imgs[k] = thumb(d / "frames" / k)
+        st, obs = r["state"], r.get("obs") or {}
+        plates = [f"{p['n']}호 {SIDE.get(p['side'], '')} {p['m'] or '?'}m" + (f" ({p['name']})" if p.get("name") else "")
+                  for p in obs.get("plates", [])] + [f"번호 못 읽음 '{p['name']}'" for p in obs.get("unread", [])]
+        el = obs.get("elev") or {}
+        items.append({"kind": "step", "img": k, "seg": int(str(r["seq"]).split("_")[-1] or 0), "sec": r["sec"],
                       "wall": r.get("wall"), "say": r["say"], "rooms": r["rooms"], "floor": st.get("floor"),
-                      "wrong_floor": st.get("wrong_floor"), "scene": st.get("scene"), "arrived": st.get("arrived"),
-                      "vlm": [", ".join(v.get("why") or []) for v in r["vlm"]],
-                      "advice": r.get("advice"), "seen": r.get("seen"), "ambiguous": r.get("ambiguous"),
-                      "latency": round(r.get("latency_seconds", 0), 2), "frames": len(r["used_frames"]),
-                      "target": r["route_target"],
-                      # 대표 장면의 OCR 글자 전부와 YOLOE 물체(0.25 이상). 예전 기록에는 없음
-                      "ocr": [[t["text"], t["score"]] for t in (r.get("raw") or {}).get("ocr", [])],
-                      "objects": [[o["name"], o["conf"]] for o in (r.get("raw") or {}).get("objects", []) if o["conf"] >= 0.25],
-                      "size": (r.get("raw") or {}).get("size")})
+                      "wrong_floor": st.get("wrong_floor"), "scene": PLACE.get(obs.get("place"), "-"),
+                      "arrived": st.get("arrived"), "action": r["action"], "recheck": r.get("recheck"),
+                      "plates": plates, "fs": obs.get("floor_sign", ""),
+                      "elev": (f"엘리베이터 {SIDE.get(el.get('side'), '')} {el.get('m') or '?'}m" if el.get("seen") else ""),
+                      "pending": r.get("target_pending"), "latency": round(r.get("latency_seconds", 0), 2),
+                      "lag": r.get("lag_s"), "heading": r.get("heading"), "steps": r.get("steps"),
+                      "target": r["route_target"], "calls": r.get("claude_calls", 0), "credit": r.get("credit", 0)})
     return items, imgs
 
 
@@ -116,7 +120,7 @@ PAGE = r"""<!doctype html>
       <input id="seek" type="range" min="0" value="0">
     </div>
     <div id="bar"><span id="pos"></span></div>
-    <div class="muted">파란 줄 = 안내 문장, 주황 줄 = VLM 호출, 갈색 줄 = 버튼 기록 (일시 정지·엘리베이터·끝내기)</div>
+    <div class="muted">파란 줄 = 안내 문장, 주황 줄 = 확대 재확인, 갈색 줄 = 버튼 기록 (엘리베이터에서 내림·목적지 변경·끝내기)</div>
   </div>
   <div class="grid">
     <div class="card vbox"><img id="img" alt="그 초의 대표 사진"><span id="clock"></span><div id="veil" hidden>일시 정지</div></div>
@@ -127,9 +131,9 @@ PAGE = r"""<!doctype html>
         <span>읽은 호실</span><b id="sRooms">-</b>
         <span>이 초에 본 것</span><b id="sSeen">-</b>
         <span>장면</span><b id="sScene">-</b>
-        <span>OCR 글자</span><b id="sOcr">-</b>
-        <span>찾은 물체</span><b id="sObj">-</b>
-        <span>VLM 호출</span><b id="sVlm">0번</b>
+        <span>읽은 문패</span><b id="sOcr">-</b>
+        <span>엘리베이터·층 표시</span><b id="sObj">-</b>
+        <span>확대 재확인</span><b id="sVlm">-</b>
         <span>처리 시간</span><b id="sTime">-</b>
       </div>
       <div id="log"></div>
@@ -143,13 +147,13 @@ const $ = id => document.getElementById(id);
 const steps = ITEMS.filter(x => x.kind === "step");
 let cur = 0, timer = null;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const label = it => it.kind === "step" ? `영상${it.seg + 1} ${it.sec}초` : (it.wall || "").slice(11);
+const label = it => it.kind === "step" ? `구간${it.seg + 1} ${it.sec}초` : (it.wall || "").slice(11);
 $("tgt").textContent = META.target;
 $("seek").max = ITEMS.length - 1;
 $("sum").innerHTML = [
   ["시작", META.start || "-"], ["안내한 시간", steps.length + "초"], ["영상 구간", META.segments + "개"],
-  ["말한 안내", META.says + "번"], ["VLM 호출", META.vlm + "번"], ["일시 정지", META.pauses + "번"],
-  ["처리 시간 중앙값", META.median + "초"], ["결과", META.arrived ? "도착 선언" : "도착 선언 없음"],
+  ["말한 안내", META.says + "번"], ["Claude 호출", META.calls + "번"], ["크레딧", META.credit],
+  ["인식 시간 중앙값", META.median + "초"], ["갱신 간격 중앙값", META.gap + "초"], ["결과", META.arrived ? "도착 선언" : "도착 선언 없음"],
 ].map(([k, v]) => `<div><span>${k}</span><b>${esc(v)}</b></div>`).join("");
 $("all").innerHTML = steps.flatMap(s => s.say.map(t => `<li><span class="muted">${label(s)}</span> ${esc(t)}</li>`)).join("");
 ITEMS.forEach((it, i) => {
@@ -157,7 +161,7 @@ ITEMS.forEach((it, i) => {
   const mk = c => { const m = document.createElement("i"); m.className = c; m.style.left = x; m.title = label(it); $("bar").appendChild(m); };
   if (it.kind === "event" && it.event !== "start") mk("ev");
   if (it.kind === "step" && it.say.length) mk("say");
-  if (it.kind === "step" && it.vlm.length) mk("vlm");
+  if (it.kind === "step" && it.recheck) mk("vlm");
 });
 
 function render(i, speakIt) {
@@ -170,14 +174,13 @@ function render(i, speakIt) {
     if (it.kind === "event") {
       if (it.event === "pause") paused = true;
       if (it.event === "resume") paused = false;
-      const extra = it.event === "start" ? ` (방식 ${it.mode || "-"}, 대표 장면 ${it.key || "-"}, 화질 ${it.quality || "-"}, 카메라 ${it.camera || "-"}, 사진 고르기 ${it.pick || "-"})` : "";
+      const extra = it.event === "start" ? ` (${it.mode === "file" ? "영상 파일" : "카메라"}, 들은 말 "${it.heard || "-"}", 입력 ${it.source || "-"}${it.fake ? ", 가짜 응답" : ""})` : it.event === "destination" ? ` → ${it.target}호` : it.event === "stale" ? ` #${it.seq}` : "";
       logs.push(`<div>${t}<span class="ev">${esc((META.ev[it.event] || it.event) + extra)}</span></div>`);
       continue;
     }
-    lastStep = it; vlm += it.vlm.length;
+    lastStep = it;
     for (const r of it.rooms) if (!rooms.includes(r)) rooms.push(r);
-    for (const w of it.vlm) logs.push(`<div>${t}<span class="vlm">VLM 호출: ${esc(w)}</span></div>`);
-    if (it.advice) logs.push(`<div>${t}<span class="vlm">VLM 추천: ${esc(it.advice.action || "답 없음")}${it.advice.veto ? " → 규칙이 막음 (" + esc(it.advice.veto) + ")" : ""}</span></div>`);
+    if (it.recheck) logs.push(`<div>${t}<span class="vlm">확대 재확인(${esc(it.recheck.why)}): ${esc(it.recheck.asked)} → ${esc(it.recheck.read || "못 읽음")}${it.recheck.match === false ? " (다름, 버림)" : ""}</span></div>`);
     for (const s of it.say) { said = s; saidAt = k; logs.push(`<div>${t}<span class="${it.arrived ? "arrived" : ""}">${esc(s)}</span></div>`); }
     if (it.arrived) arrived = true;
   }
@@ -186,20 +189,16 @@ function render(i, speakIt) {
   $("say").textContent = said; $("say").classList.toggle("fresh", saidAt === cur);
   $("log").innerHTML = logs.reverse().join("");
   $("sRooms").textContent = rooms.length ? rooms.join(", ") : "-";
-  $("sVlm").textContent = vlm + "번";
   if (lastStep) {
     $("img").src = IMGS[lastStep.img] || "";
-    $("clock").textContent = `영상${lastStep.seg + 1} · ${lastStep.sec}초` + (lastStep.wall ? " · " + lastStep.wall.slice(11) : "");
+    $("clock").textContent = `구간${lastStep.seg + 1} · ${lastStep.sec}초` + (lastStep.wall ? " · " + lastStep.wall.slice(11) : "");
     $("sFloor").textContent = lastStep.floor ? lastStep.floor + "층" + (lastStep.wrong_floor ? " (목적지 층 아님)" : "") : "모름";
-    $("sScene").textContent = lastStep.scene || "-";
-    const oc = lastStep.ocr || [];
-    $("sOcr").innerHTML = oc.length ? oc.map(([t, sc]) => `<span style="opacity:${sc >= 0.5 ? 1 : .45}">${esc(t)}<small class="muted">${sc.toFixed(2)}</small></span>`).join(" · ") : (lastStep.size ? "없음" : "기록 없음 (예전 기록)");
-    const ob = lastStep.objects || [];
-    $("sObj").textContent = ob.length ? ob.map(([n, c]) => `${n} ${c.toFixed(2)}`).join(", ") : (lastStep.size ? "없음" : "기록 없음 (예전 기록)");
-    const sn = lastStep.seen || {};
-    const seen = Object.entries(sn.plates || {}).map(([r, c]) => `${r}호(${c}시)`).concat(sn.landmarks || [], sn.floors || []);
-    $("sSeen").textContent = seen.length ? seen.join(", ") : "-";
-    $("sTime").textContent = `${lastStep.latency}초 (사진 ${lastStep.frames}장 봄${lastStep.size ? ", " + lastStep.size.join("×") : ""})` + (lastStep.ambiguous?.length ? " · 다시 봄: " + lastStep.ambiguous.join(", ") : "");
+    $("sScene").textContent = (lastStep.scene || "-") + " · 행동: " + lastStep.action;
+    $("sOcr").textContent = lastStep.plates.length ? lastStep.plates.join(", ") : "없음";
+    $("sObj").textContent = [lastStep.elev, lastStep.fs ? "층 표시 " + lastStep.fs : ""].filter(Boolean).join(" · ") || "없음";
+    $("sVlm").textContent = lastStep.recheck ? `${lastStep.recheck.asked} → ${lastStep.recheck.read || "못 읽음"}` : "-";
+    $("sSeen").textContent = lastStep.pending ? "목적지 확인 중 (호출 2번 전)" : "-";
+    $("sTime").textContent = `인식 ${lastStep.latency}초` + (lastStep.lag != null ? ` · 찍은 뒤 반영까지 ${lastStep.lag}초` : "") + (lastStep.heading != null ? ` · 방위 ${Math.round(lastStep.heading)}°` : "") + (lastStep.steps != null ? ` · 걸음 ${lastStep.steps}` : "");
   }
   if (speakIt && saidAt === cur && $("speak").checked && window.speechSynthesis) {
     const u = new SpeechSynthesisUtterance(said); u.lang = "ko-KR"; speechSynthesis.speak(u);
@@ -232,27 +231,36 @@ render(0);
 """
 
 
+def build(d):
+    """세션 폴더 → 다시보기 HTML 글자."""
+    d = Path(d)
+    items, imgs = load(d)
+    steps = [x for x in items if x["kind"] == "step"]
+    if not steps:
+        return "<!doctype html><meta charset=utf-8><p>걸음 기록이 없습니다.</p>"
+    lat = [x["latency"] for x in steps]
+    walls = [x["wall"] for x in steps if x.get("wall")]
+    meta = {"target": steps[-1]["target"], "start": next((x["wall"] for x in items if x.get("wall")), "-"),
+            "segments": len({x["seg"] for x in steps}), "says": sum(len(x["say"]) for x in steps),
+            "calls": sum(x["calls"] for x in steps), "credit": round(sum(x["credit"] for x in steps), 2),
+            "median": round(statistics.median(lat), 2), "gap": "-", "arrived": any(x["arrived"] for x in steps), "ev": EVENT_SAY}
+    ts = [x["sec"] for x in steps]
+    if len(ts) > 1:
+        meta["gap"] = round(statistics.median([b - a for a, b in zip(ts, ts[1:]) if b >= a] or [0]), 2)
+    dump = lambda o: json.dumps(o, ensure_ascii=False).replace("</", "<\\/")  # noqa: E731
+    return (PAGE.replace("__SID__", html.escape(d.name)).replace("__META__", dump(meta))
+            .replace("__IMGS__", dump(imgs)).replace("__ITEMS__", dump(items)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session")
     ap.add_argument("--out", help="기본: <세션 폴더>/replay.html")
     a = ap.parse_args()
     d = Path(a.session)
-    items, imgs = load(d)
-    steps = [x for x in items if x["kind"] == "step"]
-    if not steps:
-        raise SystemExit(f"{d}: 초 기록이 없습니다")
-    lat = sorted(x["latency"] for x in steps)
-    start = next((x["wall"] for x in items if x.get("wall")), None) or "{}-{}-{} {}:{}:{}".format(d.name[:4], d.name[4:6], d.name[6:8], d.name[9:11], d.name[11:13], d.name[13:15])
-    meta = {"target": steps[0]["target"], "start": start, "segments": len({x["seg"] for x in steps}),
-            "says": sum(len(x["say"]) for x in steps), "vlm": sum(len(x["vlm"]) for x in steps),
-            "pauses": sum(x.get("event") == "pause" for x in items), "median": lat[len(lat) // 2],
-            "arrived": any(x["arrived"] for x in steps), "ev": EVENT_SAY}
-    dump = lambda o: json.dumps(o, ensure_ascii=False).replace("</", "<\\/")
     out = Path(a.out) if a.out else d / "replay.html"
-    out.write_text(PAGE.replace("__SID__", html.escape(d.name)).replace("__META__", dump(meta))
-                   .replace("__IMGS__", dump(imgs)).replace("__ITEMS__", dump(items)), encoding="utf-8")
-    print(f"{out}  ({len(steps)}초, 안내 {meta['says']}번, VLM {meta['vlm']}번, {out.stat().st_size // 1024} KB)")
+    out.write_text(build(d), encoding="utf-8")
+    print(f"{out}  ({out.stat().st_size // 1024} KB)")
 
 
 if __name__ == "__main__":
