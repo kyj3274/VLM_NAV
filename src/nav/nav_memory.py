@@ -91,6 +91,14 @@ class Memory:
             self.event(t, f"{room}호 문패 확정 ({p['side'] or '벽 미정'}, {', '.join(why)})")
         return p
 
+    def turned(self, t):
+        """사용자가 뒤로 돌았음. 벽 쪽(왼쪽/오른쪽이 뒤바뀜)·지나간 순서·거리는 반대 방향 기록이라 지운다.
+        확정 여부(ok)와 믿음 점수는 번호 읽기의 근거라 그대로 둔다."""
+        for (sg, _), p in self.plates.items():
+            if sg == self.seg:
+                p.update(side_votes=[], side=None, side_sure=False, dist=None, dmin=None, near_t=None)
+        self.event(t, "뒤로 돎: 문패의 벽 쪽·지나간 순서를 새로 셈")
+
     def direction(self, target, since=-1):
         """확실한 문패로 만든 그래프에서 목적지 방향. since 이후에 본 문패만 씀 (뒤로 돈 뒤에는 순서를 새로 셈).
         돌려줌: {"direction": 앞쪽/뒤쪽/근처/보임/다른 층/모름, "why": …, "walk": [번호…]}"""
