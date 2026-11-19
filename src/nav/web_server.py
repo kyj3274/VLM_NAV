@@ -349,6 +349,24 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 return stop(ws, str(e))
             see_s = time.monotonic() - t0
             o = {"key": str(path), "keys": [str(path)], "pick_seconds": 0.0, **r}
+            # 확대 재확인은 상태 잠금 밖에서 (2026-11-19 사용자 지시 1). 고르는 것만 잠금 안에서 짧게, 부르는 것은 밖에서.
+            # 앞 사진의 결과가 아직 안 들어간 상태로 고르므로, 그 사이 확정된 번호를 한 번 더 볼 수는 있다(호출 1번 더, 판단은 같음).
+            rechecked, rc_s = None, 0.0
+            if not quick and r.get("obs") is not None:
+                with ws.alock:
+                    cand, why = ws.nav.recheck_pick(r["obs"])
+                if cand:
+                    t1 = time.monotonic()
+                    try:
+                        rc = ws.nav.runner.recheck(cand.get("frame") or str(path), cand)
+                    except CreditLimit as e:
+                        sync_credit(ws)
+                        return stop(ws, str(e))
+                    rc_s = time.monotonic() - t1
+                    rechecked = (cand, why, rc)
+                else:
+                    rechecked = (None, None, None)
+            ready = time.monotonic()
             with ws.alock:
                 if seq <= ws.last_applied or ws.stopped:  # 더 나중에 보낸 결과를 이미 넣었음
                     ws.counts["stale"] += 1
@@ -358,7 +376,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                     return {"status": "stale", "seq": seq, "say": []}
                 t_cap = max(t_cap, float(ws.nav.clock) + 0.01) if ws.nav.records else t_cap
                 try:
-                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick)
+                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked)
                 except CreditLimit as e:  # 확대 재확인에서 한도
                     sync_credit(ws)
                     return stop(ws, str(e))
@@ -372,7 +390,9 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 except ValueError:
                     cl = {}
                 rec.update(web_seq=seq, quick=quick, wall=wall(), heading=heading, steps=steps, client=cl, frame=path.name,
-                           see_s=round(see_s, 3), server_s=round(now - recv, 3),
+                           see_s=round(see_s, 3), server_s=round(now - recv, 3), recheck_s=round(rc_s, 3),
+                           lock_wait_s=round(now - ready, 3), recv_s=round(recv - ws.started, 3),
+                           img_bytes=path.stat().st_size,
                            lag_s=round(now - ws.started - t_cap, 3) if t is not None else None)
                 ws.last = rec
                 ws.log(rec)

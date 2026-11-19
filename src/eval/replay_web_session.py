@@ -25,9 +25,30 @@ from pathlib import Path
 ROOT = next(d for d in Path(__file__).resolve().parents if (d / "src" / "nav").is_dir())
 sys.path.insert(0, str(ROOT / "src" / "nav"))
 
+import claude_perceiver as cp  # noqa: E402
 import navigator as nv  # noqa: E402
+from claude_client import GatewayClient, Ledger, ReplayClient  # noqa: E402
 
 QUICK_SHOT = 0.3   # 응답을 받고 사진 2장 중 선명한 장을 고르는 시간(초, 추정)
+
+
+class PerceiveRunner:
+    """--reperceive: 인식·재확인을 새 프롬프트(판 3)로 다시 (캐시 outputs/cache/claude_v3.jsonl). 시간은 그 호출의 실제 초."""
+
+    def __init__(self, live, limit):
+        client = GatewayClient(timeout=30.0, ledger=Ledger(limit)) if live else ReplayClient()
+        self.client = client
+        self.p = cp.Perceiver(client, cache_path=ROOT / "outputs/cache/claude_v3.jsonl", version=3)
+        self.asked = []
+
+    def see(self, frame):
+        return self.p.see(str(frame))
+
+    def recheck(self, frame, plate):
+        rc = self.p.recheck(frame, plate)
+        self.asked.append({"frame": Path(frame).name, "asked": plate["n"] or plate["name"], "missing": False,
+                           "sec": (rc or {}).get("call", {}).get("seconds") or 0.0})
+        return rc
 
 
 class LogRunner:
@@ -58,7 +79,7 @@ def load(d):
     return start, steps, stale
 
 
-def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=False):
+def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=True, reperceive=None, limit=30.0):
     start, steps, stale = load(d)
     d = Path(d)
     # 기록에 남은 프레임: 반영된 것 + 버려진 것(stale, obs가 없어 다시 넣을 수 없음 → 같은 시각에 버린 것으로 둠)
@@ -73,7 +94,15 @@ def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=F
     up_med = statistics.median(ups)
     see_med = statistics.median(r["see_s"] for r in steps)
     qcall = quick_call if quick_call is not None else see_med
-    runner = LogRunner(rechecks, rc_default)
+    runner = LogRunner(rechecks, rc_default) if not reperceive else PerceiveRunner(reperceive == "live", limit)
+    if reperceive:  # 기록의 obs 대신 새 프롬프트 인식 (시간은 새 호출 시간)
+        new = []
+        for r in steps:
+            o = runner.see(d / "frames" / r["frame"])
+            if o["obs"] is None:
+                raise SystemExit(f"인식 실패 {r['frame']}: {o['call'].get('error')}")
+            new.append({**r, "obs": o["obs"], "see_s": o["call"].get("seconds") or r["see_s"]})
+        steps = new
     nav = nv.Navigator(runner, start["target"])
     nav.announce = False
     nav.new_segment("live_0")
@@ -104,8 +133,9 @@ def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=F
         rec = nav.step(t=round(t_cap, 2), observed=o, quick=(kind == "quick")) if kind == "quick" else \
             nav.step(t=round(t_cap, 2), observed=o)
         asked = runner.asked[before:]
-        dur = sum((rechecks.get((a["frame"], a["asked"])) or {"sec": rc_default})["sec"] for a in asked)
-        if recheck_outside:  # 가정: 확대 재확인을 잠금 밖(사진마다 따로)에서 부름 → 그 사진만 늦어지고 뒤 사진은 안 기다림
+        dur = sum(a["sec"] if "sec" in a else (rechecks.get((a["frame"], a["asked"])) or {"sec": rc_default})["sec"]
+                  for a in asked)
+        if recheck_outside:  # 2026-11-19부터 서버 동작: 확대 재확인을 잠금 밖(사진마다 따로)에서 부름 → 그 사진만 늦어짐
             begin = max(done + dur, lock_free)
             lock_free = begin
         else:
@@ -134,7 +164,9 @@ def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=F
             # 받은 순서: 이 시각 전에 받은 프레임보다 뒤, 뒤에 받은 프레임보다 앞
             seq = max([x["web_seq"] for x in steps if x["t"] + (x["lag_s"] - x["server_s"]) <= recv] + [0]) + 0.5
             heapq.heappush(heap, (recv + qcall, seq, "quick", q))
-    return {"start": start, "rows": out, "missing_recheck": sum(a["missing"] for a in runner.asked),
+    if reperceive:
+        print(f"새 인식 크레딧 {runner.client.ledger.total:.3f} ({runner.client.ledger.calls}번)")
+    return {"start": start, "rows": out, "steps": steps, "missing_recheck": sum(a["missing"] for a in runner.asked),
             "rechecks": len(runner.asked), "up_med": up_med, "see_med": see_med, "quick_call": qcall,
             "events": nav.mem.events, "nav": nav}
 
@@ -162,17 +194,37 @@ def target_wait(res, target, steps):
             "wait": round(arr["resp"] - first["t"], 2) if arr and first else None}
 
 
+def silence(res):
+    """휴대폰에 안내가 닿은 시각들 사이의 가장 긴 빈 구간 (첫 안내 ~ 도착 또는 끝)."""
+    rows = sorted([x for x in res["rows"] if not x.get("stale")], key=lambda x: x["resp"])
+    said = [x["resp"] for x in rows if x["say"]]
+    end = next((x["resp"] for x in rows if x["arrived"]), rows[-1]["resp"])
+    said = [t for t in said if t <= end] + [end]
+    gaps = [(round(b - a, 2), a, b) for a, b in zip(said, said[1:])]
+    return max(gaps) if gaps else None
+
+
+def first_elevator(res):
+    rows = sorted([x for x in res["rows"] if not x.get("stale")], key=lambda x: x["resp"])
+    hit = next((x for x in rows if any("엘리베이터가" in s for s in x["say"])), None)
+    return {"frame": hit["frame"], "t": hit["t"], "resp": hit["resp"], "say": hit["say"]} if hit else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session")
     ap.add_argument("--name", default="now")
     ap.add_argument("--quick-photo", default="next", choices=["next", "nearest"])
     ap.add_argument("--quick-call", type=float, default=None)
-    ap.add_argument("--recheck-outside", action="store_true", help="가정 계산: 확대 재확인을 잠금 밖에서 부를 때")
+    ap.add_argument("--reperceive", choices=["replay", "live"], default=None,
+                    help="인식을 새 프롬프트(판 3)로: replay=캐시만(크레딧 0), live=없는 것은 실제 호출(크레딧 씀)")
+    ap.add_argument("--credit-limit", type=float, default=30.0)
+    ap.add_argument("--recheck-inside", action="store_true", help="이전 서버 동작(확대 재확인을 잠금 안에서)으로 계산")
     ap.add_argument("--out-dir", default=str(ROOT / "outputs" / "eval"))
     a = ap.parse_args()
-    res = run(a.session, a.quick_photo, a.quick_call, recheck_outside=a.recheck_outside)
-    tw = target_wait(res, res["start"]["target"], load(a.session)[1])
+    res = run(a.session, a.quick_photo, a.quick_call, recheck_outside=not a.recheck_inside, reperceive=a.reperceive,
+              limit=a.credit_limit)
+    tw = target_wait(res, res["start"]["target"], res["steps"])
     print(f"올리기 중앙값 {res['up_med']:.2f}s, 인식 중앙값 {res['see_med']:.2f}s, 짧은 확인 {res['quick_call']:.2f}s(추정), "
           f"재확인 {res['rechecks']}번 (기록 없음 {res['missing_recheck']})")
     for x in sorted(res["rows"], key=lambda x: (x.get("resp") or 0, x["seq"])):
@@ -185,6 +237,9 @@ def main():
         print(f"  {x['kind']:5} {x['frame']} 찍음 {x['t']:6.2f} → 응답 {x['resp']:6.2f}{lr} 층 {x['floor']} {x['action']}"
               f" 재확인 {x['recheck']}" + (" ★빠른확인요청" if x["confirm_now"] else "") + f" | {' / '.join(x['say'])}")
     print("대기:", json.dumps(tw, ensure_ascii=False))
+    sil, fe = silence(res), first_elevator(res)
+    print("무안내 최장:", sil, " 엘리베이터 첫 안내:", json.dumps(fe, ensure_ascii=False))
+    tw.update(silence=sil, first_elevator=fe)
     out = Path(a.out_dir) / f"web_replay_{Path(a.session).name}_{a.name}.json"
     out.write_text(json.dumps({"wait": tw, "rows": res["rows"], "events": res["events"],
                                "missing_recheck": res["missing_recheck"]}, ensure_ascii=False, indent=1), encoding="utf-8")

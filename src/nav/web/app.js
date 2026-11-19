@@ -14,7 +14,8 @@ const now = () => performance.now();
 const S = {
   code: '', sid: null, target: '', name: '', running: false, loopActive: false, listening: false, prep: null,
   heading: null, oriAsked: false, oriOk: null, motionAsked: false, motionOk: null,
-  stream: null, cameraDenied: false, ultrawideId: null, cameraLabel: '', wakeLock: null,
+  stream: null, cameraDenied: false, ultrawideId: null, cameraLabel: '', wakeLock: null, zoomMin: null, camInfo: null,
+  prevNet: null,
   audio: null, speechUnlocked: false, voice: null, lastSpoken: '', lastSpeech: '', priorityActive: false,
   holding: false, holdStart: 0, holdTimer: null, voiceMode: null, rec: null, recState: null,
   files: [], fileIdx: 0, t0: 0, inflight: 0, lastSeq: 0, lastAppliedAt: 0, lastRtt: null, slowSaid: false,
@@ -143,7 +144,7 @@ function fileMode() { return S.files.length > 0; }
 function cameraConstraints() {
   const hi = $('quality').value === '1080';
   const base = { width: { ideal: hi ? 1920 : 1280 }, height: { ideal: hi ? 1080 : 720 } };
-  return ($('ultrawide').checked && S.ultrawideId)
+  return ($('ultrawide').checked && S.ultrawideId)   // 초광각 장치가 따로 보이면 그것, 아니면 열고 나서 zoom 0.5 (applyUltraZoom)
     ? Object.assign({ deviceId: { exact: S.ultrawideId } }, base)
     : Object.assign({ facingMode: { ideal: 'environment' } }, base);
 }
@@ -160,13 +161,34 @@ function openCamera(force = false) {
     try { await v.play(); } catch (e) { /* 다음 터치에서 재생 */ }
     const tr = stream.getVideoTracks()[0];
     S.cameraLabel = tr ? tr.label : '';
-    try {
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      const uw = devs.find((d) => d.kind === 'videoinput' && /ultra ?wide|울트라 ?와이드|초광각/i.test(d.label));
-      if (uw) { S.ultrawideId = uw.deviceId; $('ultrawide').disabled = false; }
-    } catch (e) { /* 무시 */ }
+    await probeCameras(tr);
+    await applyUltraZoom(tr);
     return true;
   }).catch((e) => { S.cameraDenied = /NotAllowed|Security|Permission/i.test((e && e.name) || ''); return false; });
+}
+// 초광각 확인 (2026-11-19): ① enumerateDevices에 '초광각/Ultra Wide' 후면 카메라가 따로 보이는지
+// ② 지금 카메라(아이폰은 보통 '듀얼 와이드'·'트리플' 가상 카메라)가 zoom 1 미만(0.5x)을 지원하는지(getCapabilities().zoom).
+// 둘 중 하나면 설정의 초광각을 켤 수 있다. 결과는 세션 기록(camera.probe)에 남긴다.
+async function probeCameras(track) {
+  const info = { devices: [], zoom: null, ultrawideDevice: false };
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    info.devices = devs.filter((d) => d.kind === 'videoinput').map((d) => d.label || '(이름 없음)');
+    const uw = devs.find((d) => d.kind === 'videoinput' && /ultra ?wide|울트라 ?와이드|초광각/i.test(d.label));
+    if (uw) { S.ultrawideId = uw.deviceId; info.ultrawideDevice = true; }
+  } catch (e) { /* 무시 */ }
+  try {
+    const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.zoom) { info.zoom = { min: caps.zoom.min, max: caps.zoom.max }; if (caps.zoom.min < 1) S.zoomMin = caps.zoom.min; }
+  } catch (e) { /* 무시 */ }
+  if (S.ultrawideId || S.zoomMin) $('ultrawide').disabled = false;
+  info.label = track ? track.label : '';
+  S.camInfo = info;
+  return info;
+}
+async function applyUltraZoom(track) {
+  if (!track || S.ultrawideId || !S.zoomMin) return;
+  try { await track.applyConstraints({ advanced: [{ zoom: $('ultrawide').checked ? S.zoomMin : 1 }] }); } catch (e) { /* 무시 */ }
 }
 function keepAwake() {
   if (S.wakeLock) return Promise.resolve(true);
@@ -302,7 +324,8 @@ async function finishHold() {
 
 // ---------------------------------------------------------------- 목적지 보내기
 function sessionMeta() {
-  return { camera: { label: S.cameraLabel, ultrawide: $('ultrawide').checked, quality: $('quality').value },
+  return { camera: { label: S.cameraLabel, ultrawide: $('ultrawide').checked, quality: $('quality').value, probe: S.camInfo,
+    ultra_by: $('ultrawide').checked ? (S.ultrawideId ? 'device' : S.zoomMin ? `zoom ${S.zoomMin}` : 'none') : null },
     device: { ua: navigator.userAgent, orientation: S.oriOk, motion: S.motionOk, voice: voiceMode() },
     mode: fileMode() ? 'file' : 'camera', files: S.files.map((f) => f.name) };
 }
@@ -452,7 +475,7 @@ async function bestFrame() {   // 1.5초 동안 6장을 보고 가장 선명한 
     if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; }
     await sleep(S.intervalMs / S.shots);
   }
-  return best && best.width ? { canvas: best, t: at, heading, pickMs: now() - tb } : null;
+  return best && best.width ? { canvas: best, t: at, heading, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 } : null;
 }
 async function loop() {
   S.loopActive = true;
@@ -475,21 +498,28 @@ async function quickConfirm() {   // 문 앞 빠른 확인: 다음 1.5초를 기
     if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; }
     if (i === 0) await sleep(120);
   }
-  if (best && best.width && S.running) sendFrame({ canvas: best, t: at, heading, pickMs: now() - tb }, 'confirm');
+  if (best && best.width && S.running) sendFrame({ canvas: best, t: at, heading, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 }, 'confirm');
 }
 async function sendFrame(f, kind) {
   S.inflight++; S.sent++;
   renderTop();
   const fd = new FormData();
-  fd.append('image', await toJpeg(f.canvas), 'frame.jpg');
+  const te = now();
+  const blob = await toJpeg(f.canvas);
+  const encMs = now() - te;
+  fd.append('image', blob, 'frame.jpg');
   fd.append('t', f.t.toFixed(2));
   if (f.heading !== null) fd.append('heading', f.heading.toFixed(1));
   if (S.guide) fd.append('steps', String(S.guide.steps));
-  fd.append('client', JSON.stringify({ pick_ms: Math.round(f.pickMs), size: [f.canvas.width, f.canvas.height], inflight: S.inflight }));
   const t0 = now();
+  // 지연 측정 (2026-11-19): 휴대폰 시계(시작부터 초)로 고르기 끝·인코딩·보낸 시각, 사진 용량, 바로 전에 끝난 요청의 왕복
+  fd.append('client', JSON.stringify({ pick_ms: Math.round(f.pickMs), size: [f.canvas.width, f.canvas.height], inflight: S.inflight,
+    pick_end: f.pickEnd != null ? +f.pickEnd.toFixed(3) : null, enc_ms: Math.round(encMs), bytes: blob.size,
+    sent_at: +((t0 - S.t0) / 1000).toFixed(3), prev: S.prevNet }));
   try {
     const r = await api(`/api/session/${S.sid}/${kind === 'confirm' ? 'confirm' : 'frame'}`, { method: 'POST', body: fd, timeout: 30000 });
     if (r.status === 'ok') S.lastRtt = Math.round(now() - t0);
+    S.prevNet = { seq: r.seq, rtt_ms: Math.round(now() - t0), got_at: +((now() - S.t0) / 1000).toFixed(3), server_s: r.server_s };
     S.failSpoken = false; setError('');
     onFrameReply(r);
   } catch (e) {
@@ -610,6 +640,22 @@ $('code-form').addEventListener('submit', async (e) => {
   save('nav_code', S.code);
   await runChecks();
   save('nav_setup_done', '1');
+});
+$('cam-check').addEventListener('click', async () => {   // 카메라를 열어(권한) 후면 카메라 목록과 zoom 범위를 보여 주고 읽음
+  unlockAudio();
+  const ok = await openCamera(true);
+  const info = S.camInfo || {};
+  const lines = ok ? [`지금 카메라: ${info.label || '-'}`, `후면 카메라 목록: ${(info.devices || []).join(', ') || '없음'}`,
+    `초광각 장치: ${info.ultrawideDevice ? '있음' : '없음'}`,
+    `확대 범위(zoom): ${info.zoom ? `${info.zoom.min}~${info.zoom.max}` : '알 수 없음(지원 안 함)'}`] : ['카메라를 열 수 없습니다.'];
+  $('cam-list').innerHTML = '';
+  for (const t of lines) { const li = document.createElement('li'); li.textContent = t; $('cam-list').appendChild(li); }
+  const can = !!(S.ultrawideId || S.zoomMin);
+  say(ok ? (can ? '초광각을 쓸 수 있습니다. 설정에서 켤 수 있습니다.' : '초광각을 쓸 수 없습니다. 일반 카메라를 씁니다.') : '카메라를 열 수 없습니다.', { force: true });
+});
+$('ultrawide').addEventListener('change', () => {   // 장치가 따로면 다시 열고, zoom 방식이면 바로 바꿈
+  if (!S.stream) return;
+  if (S.ultrawideId) openCamera(true); else applyUltraZoom(S.stream.getVideoTracks()[0]);
 });
 $('to-dest').addEventListener('click', () => {
   unlockAudio();

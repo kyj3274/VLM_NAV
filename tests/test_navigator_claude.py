@@ -128,7 +128,7 @@ def test_quiet_repeats_rule_sentence():
     nav = nv.Navigator(ScriptRunner(script), "314")
     exited(nav)
     recs = run(nav, 14)
-    quiet = [r for r in recs if r["say"] == ["계속 앞으로 천천히 가세요."]]
+    quiet = [r for r in recs if r["say"] == ["3층 복도입니다. 문패를 찾고 있습니다."]]  # 2026-11-19: 지금 상황 문장
     assert quiet and quiet[0]["t"] - recs[0]["t"] == 10
 
 
@@ -170,7 +170,7 @@ def test_live_time_clock():
     nav.step(["f.jpg"], t=0.0)
     nav.new_segment("2")
     recs = [nav.step(["f.jpg"], t=1.0 + 1.5 * i) for i in range(11)]
-    assert [r["say"] for r in recs].count(["계속 앞으로 천천히 가세요."]) == 1
+    assert [r["say"] for r in recs].count(["3층 복도입니다. 문패를 찾고 있습니다."]) == 1
     assert recs[-1]["state"]["floor"] == "4"
 
 
@@ -228,9 +228,11 @@ def test_stairs_floor_move_one_read_and_stop_elevator():
     recs = run(nav, 6)
     assert recs[0]["state"]["floor"] == "1" and recs[2]["action"] == "엘리베이터 타기"
     assert recs[3]["state"]["floor_move"]["why"] == "계단"
+    assert recs[4]["action"] == "계단으로 올라가기" and recs[4]["say"] == ["계단입니다. 4층까지 올라가세요."]
+    assert not recs[4]["state"]["elevator_said"]  # 계단을 고르면 엘리베이터 안내를 멈춤
     assert recs[5]["state"]["floor"] == "4" and not recs[5]["state"]["wrong_floor"]
     assert recs[5]["state"]["floor_move"] is None and recs[5]["action"] == "직진"
-    assert "엘리베이터를 탈 필요 없습니다" in " ".join(recs[5]["say"])
+    assert "목적지 층입니다. 복도를 따라 문패를 찾겠습니다." in recs[5]["say"]
     assert any("연속 2번 안 기다림" in e["text"] for e in nav.mem.events)
 
 
@@ -289,3 +291,90 @@ def test_quick_confirm_miss_resets():
          "obs": nv.Navigator.quick_obs([], None)}
     r1 = nav.step(observed=o, quick=True)
     assert not r1["state"]["arrived"] and r1["state"]["arr_run"] == 0 and not r1["state"]["quick_asked"]
+
+
+# ---------------------------------------------------------------- 2026-11-19 (2): 무안내·계단 층 표시·엘리베이터 두 단계·지나침
+def SO(place="stairs", ss="", fs=""):
+    o = O(place=place, floor_sign=fs)
+    o["stair_sign"], o["stair_floors"] = ss, cp.floors_of_stair_sign(ss)
+    return o
+
+
+def EC(why="doors", side="L", m=8.0):
+    return {"seen": why in ("button", "display"), "cand": True, "why": why, "side": side, "m": m, "btn": "none"}
+
+
+def start_1f(script, target="410"):
+    nav = nv.Navigator(ScriptRunner([O([("105", "C", 2.5, "door")])] + script), target)
+    nav.new_segment("1")
+    nav.step(["f.jpg"])
+    return nav
+
+
+def test_quiet_any_state_elevator_and_stairs():
+    nav = start_1f([O(elev=EL, place="elev_hall")] * 2 + [O(elev=EL, place="elev_hall")] * 12)
+    recs = run(nav, 14)
+    assert ["엘리베이터를 타고 4층을 누르세요."] in [r["say"] for r in recs]  # 엘리베이터 타기에서도 10초면 말함
+    nav = start_1f([SO()] * 14)
+    recs = run(nav, 14)
+    assert recs[1]["say"] == ["계단입니다. 4층까지 올라가세요."]
+    assert ["계단입니다. 4층까지 올라가세요."] in [r["say"] for r in recs[2:]]
+
+
+def test_stair_sign_estimate_exit_and_temp_floor():
+    nav = start_1f([SO(), SO(), SO(ss="4F 3F"), SO(), SO(), SO(), SO(), SO(), SO(), SO(), SO(), SO(), SO(ss="4F")]
+                   + [O()] * 4 + [O([("410", "L", 5.0, "door")])])
+    recs = run(nav, 18)
+    assert "지금 약 3층과 4층 사이입니다" in " ".join(" ".join(r["say"]) for r in recs[:12])
+    assert recs[12]["say"] == ["4층입니다. 계단에서 나가세요."] and recs[12]["action"] == "계단에서 나가기"
+    assert recs[16]["state"]["floor"] == "4" and recs[16]["state"]["floor_temp"]
+    assert recs[16]["say"] == ["4층으로 보입니다. 복도를 따라 문패를 찾겠습니다."]
+
+
+def test_temp_floor_overridden_by_plate():
+    """계단 표시로 임시 4층 → 문패 305가 확정되면 바로 3층 (문패 우선)."""
+    nav = start_1f([SO(), SO(ss="4F 3F")] + [O()] * 4 + [O([("305", "C", 2.5, "door")])])
+    recs = run(nav, 7)
+    assert recs[5]["state"]["floor"] == "4" and recs[5]["state"]["floor_temp"]
+    assert recs[6]["state"]["floor"] == "3" and recs[6]["state"]["wrong_floor"]
+
+
+def test_elevator_candidate_then_confirm():
+    nav = start_1f([O(elev=EC("doors", "L", 12.0)), O(elev={**EC("button", "L", 9.0), "btn": "R"})])
+    recs = run(nav, 2)
+    assert recs[0]["say"] == ["왼쪽 앞에 엘리베이터가 있는 것 같습니다. 천천히 가세요."]
+    assert recs[1]["say"] == ["엘리베이터가 11시 방향 약 9미터에 있습니다. 그쪽으로 천천히 가세요."]
+
+
+def test_elevator_candidate_cancel_quietly():
+    nav = start_1f([O(elev=EC("hall", "C", 15.0)), O(), O(), O()])
+    recs = run(nav, 4)
+    assert recs[0]["say"] and recs[1]["say"] == [] and recs[2]["say"] == []
+    assert any("후보 취소" in e["text"] for e in nav.mem.events)
+
+
+def test_elevator_passed():
+    nav = start_1f([O(elev=EC("doors", "R", 4.0)), O(elev=EC("button", "R", 2.5)), O(), O()])
+    recs = run(nav, 4)
+    assert recs[3]["say"] == ["엘리베이터를 지나쳤습니다. 뒤로 돌아 11시 방향입니다."]
+    # 4m 앞 오른쪽에서 사라짐 = 그쪽으로 돈 것: 말하지 않음
+    nav = start_1f([O(elev=EC("display", "R", 8.0)), O(elev=EC("display", "R", 4.0)), O(), O()])
+    recs = run(nav, 4)
+    assert "지나쳤습니다" not in " ".join(" ".join(r["say"]) for r in recs)
+    nav = start_1f([O(elev=EC("doors", "R", 4.0)), O(elev=EC("button", "R", 2.5)), O(), O()])
+    recs = run(nav, 4)
+    assert recs[3]["say"] == ["엘리베이터를 지나쳤습니다. 뒤로 돌아 11시 방향입니다."]
+    assert recs[3]["action"] == "엘리베이터로 돌아가기"
+
+
+def test_elevator_lost_on_stairs_is_quiet():
+    nav = start_1f([O(elev=EC("button", "L", 2.0)), O(elev=EC("button", "L", 2.0)), SO(), SO()])
+    recs = run(nav, 4)
+    assert "지나쳤습니다" not in " ".join(" ".join(r["say"]) for r in recs)
+    assert recs[3]["say"] == ["계단입니다. 4층까지 올라가세요."]
+
+
+def test_clean_stair_sign_and_elevator_kinds():
+    o = cp.clean({"plates": [], "fs": "", "ss": "4F 3F", "place": "stairs", "door": "none",
+                  "el": [{"why": "hall", "side": "C", "m": 14, "btn": "none"}], "arrows": []})
+    assert o["stair_floors"] == ["3", "4"] and o["elev"]["cand"] and not o["elev"]["seen"] and o["elev"]["m"] == 14

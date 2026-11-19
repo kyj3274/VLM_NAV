@@ -45,6 +45,9 @@ class Result:
     error: str | None = None
     timed_out: bool = False
     model: str = ""
+    attempts: int = 1          # 재시도 포함 시도 횟수 (2026-11-19 지연 원인 확인용)
+    retry_wait: float = 0.0    # 재시도 전에 기다린 초
+    sent_bytes: int = 0        # 보낸 이미지(base64 전) 바이트 합
 
     @property
     def ok(self):
@@ -132,9 +135,11 @@ class GatewayClient:
         if self.model in THINKING:
             p["thinking"] = THINKING[self.model]
         res = Result(model=self.model)
+        res.sent_bytes = sum(len(c["source"]["data"]) * 3 // 4 for c in content if c.get("type") == "image")
         a = self.anthropic
         t0 = time.monotonic()
         for attempt in range(self.retries + 1):
+            res.attempts = attempt + 1
             try:
                 msg = self.sdk.messages.create(**p)
                 break
@@ -146,6 +151,7 @@ class GatewayClient:
                 retry = isinstance(e, (a.RateLimitError, a.APIConnectionError, a.InternalServerError)) or (
                     isinstance(e, a.APIStatusError) and e.status_code >= 500)
                 if retry and attempt < self.retries:
+                    res.retry_wait += 2 ** attempt
                     time.sleep(2 ** attempt)
                     continue
                 status = getattr(e, "status_code", None)
