@@ -219,3 +219,20 @@ def test_sensor_js_with_fake_sensors():
     f = Path(__file__).resolve().parent / "web" / "sensors.test.js"
     r = subprocess.run([node, "--test", str(f)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+
+
+def test_confirm_endpoint_quick_arrival(tmp_path):
+    """가짜 장면: 목적지 2m 안 첫 응답에 confirm → /confirm 짧은 확인으로 바로 도착."""
+    c, calls = app_with(tmp_path)
+    sid = c.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
+    r = None
+    for k in range(25):
+        r = frame(c, sid, 1.5 * k)
+        if r["confirm"] or r["arrived"]:
+            break
+    assert r["confirm"] and not r["arrived"] and r["say"][-1].endswith("멈춰 주세요, 확인 중입니다.")
+    q = c.post(f"/api/session/{sid}/confirm", headers=H, files={"image": ("q.jpg", jpg(), "image/jpeg")},
+               data={"t": str(1.5 * k + 0.8)}).json()
+    assert q["status"] == "ok" and q["quick"] and q["arrived"]
+    log = [json.loads(x) for x in (tmp_path / sid / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert log[-1]["quick"] and log[-1]["frame"].endswith("_q.jpg")

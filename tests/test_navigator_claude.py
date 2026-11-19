@@ -63,11 +63,12 @@ def test_route_a_like():
     nav.runner = ScriptRunner([O([("317", "C", 2.5, "door")])] * 2 + [O([("314", "C", 1.5, "door")])] * 4)
     recs = run(nav, 5, seg="2")
     assert recs[0]["state"]["floor"] == "3" and recs[0]["action"] == "직진"
-    # 목적지 번호: 첫 호출(재확인 일치 포함)은 '확인 중'까지만, 두 번째 호출에서 확정
-    assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["목적지 같습니다, 확인 중입니다."]
+    # 목적지 번호: 첫 호출(재확인 일치 포함)은 '확인 중'까지만, 두 번째 호출에서 확정.
+    # 2026-11-19: 두 호출 모두 2m 안이면 두 번째에 확정과 도착이 함께 (전에는 세 번째에 도착)
+    assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["목적지 같습니다. 멈춰 주세요, 확인 중입니다."]
     assert recs[2]["rooms"] == [] and recs[2]["recheck"]["match"] is True
-    assert recs[3]["say"] == ["멈춰 주세요, 확인 중입니다."]
-    assert recs[4]["action"] == "도착" and recs[4]["say"] == ["정면에 314호 문이 있습니다."]
+    assert recs[3]["action"] == "도착" and recs[3]["say"] == ["정면에 314호 문이 있습니다."]
+    assert recs[4]["action"] == "도착" and recs[4]["say"] == []  # 도착 안내는 한 번만
     assert recs[0]["recheck"]["match"] is True  # 317: 읽기 + 재확인 일치 → 한 번에 확정
 
 
@@ -143,9 +144,9 @@ def test_arrival_side_within_2m():
     nav = nv.Navigator(ScriptRunner(script), "410")
     exited(nav)
     recs = run(nav, 3)
-    assert recs[0]["say"][-1] == "목적지 같습니다, 확인 중입니다."
-    assert recs[1]["say"][-1] == "멈춰 주세요, 확인 중입니다."
-    assert recs[2]["action"] == "도착" and recs[2]["say"] == ["왼쪽 앞에 410호 문이 있습니다."]
+    assert recs[0]["say"][-1] == "목적지 같습니다. 멈춰 주세요, 확인 중입니다."
+    assert recs[1]["action"] == "도착" and recs[1]["say"][-1] == "왼쪽 앞에 410호 문이 있습니다."  # 2026-11-19: 한 걸음 빨라짐
+    assert recs[2]["say"] == []
 
 
 def test_target_needs_two_calls_but_floor_plate_one():
@@ -215,3 +216,76 @@ def test_passed_target_then_neighbor_is_away():
     assert recs[2]["action"] == "뒤로 돌기"
     assert all(r["action"] == "뒤로 돌기" for r in recs[2:])  # 412(가까워짐)에도 '방향이 맞습니다' 안 함
     assert ["목적지와 멀어지고 있습니다. 뒤로 돌아가세요."] in [r["say"] for r in recs]
+
+
+# ---------------------------------------------------------------- 2026-11-19 계단·확인 겹치기·빠른 확인
+def test_stairs_floor_move_one_read_and_stop_elevator():
+    """1층으로 정한 뒤 계단 장면 → '층 이동 가능'. 그 뒤 다른 층 확정 문패 한 번이면 바로 층 이동, 엘리베이터 안내 멈춤."""
+    script = [O([("105", "C", 2.5, "door")]), O(elev=EL, place="elev_hall"), O(elev=EL, place="elev_hall"),
+              O(place="stairs"), O(place="stairs"), O([("405", "L", 4.0, "door")])]
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    nav.new_segment("1")
+    recs = run(nav, 6)
+    assert recs[0]["state"]["floor"] == "1" and recs[2]["action"] == "엘리베이터 타기"
+    assert recs[3]["state"]["floor_move"]["why"] == "계단"
+    assert recs[5]["state"]["floor"] == "4" and not recs[5]["state"]["wrong_floor"]
+    assert recs[5]["state"]["floor_move"] is None and recs[5]["action"] == "직진"
+    assert "엘리베이터를 탈 필요 없습니다" in " ".join(recs[5]["say"])
+    assert any("연속 2번 안 기다림" in e["text"] for e in nav.mem.events)
+
+
+def test_floor_conflict_without_stairs_still_two():
+    """계단·층 표시가 없으면 다른 층 문패는 지금처럼 2번 연속이어야 층이 바뀐다."""
+    nav = nv.Navigator(ScriptRunner([O([("105", "C", 2.5, "door")])] + [O([("405", "L", 4.0, "door")])] * 2), "410")
+    nav.new_segment("1")
+    recs = run(nav, 3)
+    assert recs[1]["state"]["floor"] == "1" and recs[2]["state"]["floor"] == "4"
+
+
+def test_floor_sign_after_stairs_one_read():
+    nav = nv.Navigator(ScriptRunner([O([("105", "C", 2.5, "door")]), O(place="stairs"), O(floor_sign="4F")]), "410")
+    nav.new_segment("1")
+    recs = run(nav, 3)
+    assert recs[2]["state"]["floor"] == "4"
+
+
+def test_confirm_and_arrive_overlap():
+    """2m 안에서 서로 다른 호출 2번이 목적지를 읽으면 두 번째에 확정과 도착이 함께 (전에는 세 번째)."""
+    nav = nv.Navigator(ScriptRunner([O([("410", "L", 1.8, "door")])] * 3), "410")
+    exited(nav)
+    recs = run(nav, 2)
+    assert recs[0]["action"] == "목적지 접근" and recs[0]["say"][-1] == "목적지 같습니다. 멈춰 주세요, 확인 중입니다."
+    assert recs[0]["confirm_now"] and recs[0]["rooms"] == []
+    assert recs[1]["state"]["arrived"] and recs[1]["say"][-1] == "왼쪽 앞에 410호 문이 있습니다."
+
+
+def test_far_first_read_still_needs_two_close():
+    """첫 읽기가 2m 밖이면 도착 연속에 넣지 않는다."""
+    nav = nv.Navigator(ScriptRunner([O([("410", "C", 5.0, "door")]), O([("410", "C", 1.8, "door")]),
+                                     O([("410", "C", 1.5, "door")])]), "410")
+    exited(nav)
+    recs = run(nav, 3)
+    assert not recs[1]["state"]["arrived"] and recs[1]["say"][-1] == "멈춰 주세요, 확인 중입니다."
+    assert recs[2]["state"]["arrived"]
+
+
+def test_quick_confirm_step():
+    """빠른 확인 사진(문패만)이 목적지를 2m 안에서 읽으면 그 걸음에 도착. 확대 재확인은 부르지 않는다."""
+    nav = nv.Navigator(ScriptRunner([O([("410", "L", 1.8, "door")])]), "410")
+    exited(nav)
+    r0 = nav.step(["f.jpg"])
+    assert r0["confirm_now"]
+    o = {"key": "q.jpg", "keys": ["q.jpg"], "pick_seconds": 0, "cached": False, "call": {"seconds": 1.0, "credit": 0.1},
+         "obs": nv.Navigator.quick_obs([dict(n="410", name="", side="L", m=1.6, on="door", box=[10, 30, 20, 40])], r0["obs"])}
+    r1 = nav.step(t=None, observed=o, quick=True)
+    assert r1["state"]["arrived"] and r1["recheck"] is None and r1["claude_calls"] == 1
+
+
+def test_quick_confirm_miss_resets():
+    nav = nv.Navigator(ScriptRunner([O([("410", "L", 1.8, "door")])]), "410")
+    exited(nav)
+    nav.step(["f.jpg"])
+    o = {"key": "q.jpg", "keys": ["q.jpg"], "pick_seconds": 0, "cached": False, "call": {"seconds": 1.0, "credit": 0.1},
+         "obs": nv.Navigator.quick_obs([], None)}
+    r1 = nav.step(observed=o, quick=True)
+    assert not r1["state"]["arrived"] and r1["state"]["arr_run"] == 0 and not r1["state"]["quick_asked"]

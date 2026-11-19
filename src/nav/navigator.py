@@ -48,6 +48,7 @@ EL_NEAR_M = 3.0   # 엘리베이터 '타세요'는 정면(가운데) 이 거리 
                   # (2026-11-17 경로 A 1층 7초: 오른쪽 5m 엘리베이터에서 바로 '타세요' → 판단 지점 2(직진)를 틀려 추가.
                   #  claude_nav의 엘리베이터_찾기 → 호출_버튼_안내(약 2m)와 같은 두 단계)
 DOOR_GONE = 2     # 시작 출입문이 이 초 동안 안 보이면 지나간 것으로 봄
+QUICK_MAX = 3     # 문 앞 빠른 확인(confirm_now)은 목적지 하나에 이 횟수까지 (2026-11-19 사용자 지시 4)
 ACTIONS = ["문 통과", "직진", "왼쪽", "오른쪽", "뒤로 돌기", "엘리베이터 타기", "엘리베이터로 돌아가기",
            "멈추고 둘러보기", "목적지 접근", "도착"]
 ROOM = re.compile(r"^\d{3}$")
@@ -99,7 +100,8 @@ class Navigator:
                    "elevator_said": False, "el_run": 0, "el_seen": False, "el_ready": None, "button": None,
                    "pending": None, "fs_last": None, "near_d": [], "trend_said": None, "target_seen": None,
                    "arr_run": 0, "last_say": 0, "loc": None, "assume1": False, "door_phase": False, "door_gone": 0,
-                   "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기", "maybe_said": False}
+                   "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기", "maybe_said": False,
+                   "floor_move": None, "quick_asked": False, "quick_n": 0}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
@@ -119,7 +121,7 @@ class Navigator:
         self.target, self.tf = target, target[0] if ROOM.match(target) else None
         self.mem.target = target
         st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
-                  elevator_said=False, el_approach=False, el_ready=None)
+                  elevator_said=False, el_approach=False, el_ready=None, quick_asked=False, quick_n=0)
         if st["floor"] is not None:
             st["wrong_floor"] = bool(self.tf) and st["floor"] != self.tf
             st["act"] = ("엘리베이터로 돌아가기" if self.si > 0 else "직진") if st["wrong_floor"] else "직진"
@@ -136,7 +138,8 @@ class Navigator:
             self.st.update(floor=None, wrong_floor=False, room=None, floor_rooms=[], elevator_said=False, el_run=0,
                            el_seen=False, el_ready=None, button=None, pending=None, fs_last=None, near_d=[],
                            trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None, assume1=False,
-                           door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False)
+                           door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False,
+                           floor_move=None, quick_asked=False, quick_n=0)
 
     # ------------------------------------------------------------ 재확인 대상
     def recheck_pick(self, obs):
@@ -162,6 +165,16 @@ class Navigator:
                 return other[0], "층 충돌 번호"
         return None, None
 
+    @staticmethod
+    def quick_obs(plates, base=None):
+        """문 앞 빠른 확인 호출(가장 가까운 문패 번호만 읽음) 결과를 step()에 넣을 인식 형식으로.
+        장소·앞 출입문은 바로 앞 인식(base)을 이어 쓰고, 엘리베이터·화살표·층 표시는 안 본 것으로 둔다."""
+        b = base or {}
+        return {"plates": [dict(p) for p in plates], "unread": [], "floor_sign": "", "floor": None,
+                "place": b.get("place", "unknown"), "door_ahead": b.get("door_ahead", "none"),
+                "elev": {"seen": False, "why": "none", "side": "none", "m": None, "btn": "none"},
+                "arrows": [], "fixes": [], "quick": True}
+
     # ------------------------------------------------------------ 위치 파악 끝
     def locate_end(self, loc):
         st, tf = self.st, self.tf
@@ -183,9 +196,10 @@ class Navigator:
         return ["앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
 
     # ------------------------------------------------------------ 한 걸음
-    def step(self, frames=None, t=None, observed=None):
+    def step(self, frames=None, t=None, observed=None, quick=False):
         """frames: 1초 구간의 사진 파일 경로들 (영상 실행). t: 사진 찍은 시각(초, 겹쳐 보내기·웹),
-        observed: 이미 받은 인식 결과(겹쳐 보내기에서 다른 스레드가 부른 것). 반환: 이 걸음의 기록."""
+        observed: 이미 받은 인식 결과(겹쳐 보내기에서 다른 스레드가 부른 것).
+        quick: 문 앞 빠른 확인 사진(quick_obs 형식, 확대 재확인 안 함). 반환: 이 걸음의 기록."""
         st, target, tf = self.st, self.target, self.tf
         if t is not None:
             self.clock = t
@@ -204,6 +218,13 @@ class Navigator:
             return self._finish(o, None, [], say, note, latency, calls, error=err, recheck=None)
 
         self.mem.place(clock, cp.PLACE_KO.get(obs["place"]))
+        # ---- 층 이동 가능 (2026-11-19 사용자 지시 2: 계단으로 층을 옮긴 경우)
+        # 계단 장면이거나 층 표시가 보이면 표시해 두고, 그 뒤 다른 층 문패·층 표시가 또렷하면(확정 문패, 읽힌 층 표시)
+        # 2번 연속을 기다리지 않고 바로 층을 바꾼다. 층이 바뀌면 지운다.
+        if (obs["place"] == "stairs" or obs["floor"]) and not st["floor_move"]:
+            why = "계단" if obs["place"] == "stairs" else f"층 표시 '{obs['floor_sign']}'"
+            st["floor_move"] = {"t": clock, "why": why}
+            self.mem.event(clock, f"층 이동 가능 ({why})")
         loc = st["loc"]
         if first and si == 0:
             if obs["door_ahead"] != "none":  # 출입문 앞에서 시작: 문을 지나 들어가는 것이 먼저 (건물 입구 = 1층으로 가정)
@@ -234,7 +255,7 @@ class Navigator:
         # ---- 확대 재확인 (최대 1개)
         plates = [dict(p) for p in obs["plates"]]
         rflag, recheck = {}, None
-        cand, why = self.recheck_pick(obs)
+        cand, why = (None, None) if quick else self.recheck_pick(obs)
         if cand:
             rc = self.runner.recheck(cand.get("frame") or o["key"], cand)
             if rc:
@@ -294,7 +315,10 @@ class Navigator:
         other = [x for x in rooms if st["floor"] and ROOM.match(x) and x[0] != st["floor"]]
         if other:
             digit = other[0][0]
-            if st["pending"] and st["pending"][0] == digit and st["pending"][1] == self.n - 1:
+            if st["floor_move"]:  # 계단·층 표시 뒤: 한 번이면 층 이동
+                floor_change = digit
+                self.mem.event(clock, f"층 이동 뒤 다른 층 문패 {other[0]}호: {st['floor']}층 → {digit}층 (연속 2번 안 기다림)")
+            elif st["pending"] and st["pending"][0] == digit and st["pending"][1] == self.n - 1:
                 floor_change = digit
                 self.mem.event(clock, f"층 충돌 2번 연속: {st['floor']}층 → {digit}층")
             else:
@@ -307,7 +331,10 @@ class Navigator:
         if fs and st["floor"] is None:
             fs_ok = fs
         elif fs and fs != st["floor"] and not floor_change:
-            if st["pending"] and st["pending"][0] == fs and st["pending"][1] == self.n - 1:
+            if st["floor_move"]:
+                floor_change = fs
+                self.mem.event(clock, f"층 이동 뒤 층 표시 '{obs['floor_sign']}': {st['floor']}층 → {fs}층 (연속 2번 안 기다림)")
+            elif st["pending"] and st["pending"][0] == fs and st["pending"][1] == self.n - 1:
                 floor_change = fs
                 self.mem.event(clock, f"층 표지 충돌 2번 연속: {st['floor']}층 → {fs}층")
             else:
@@ -318,7 +345,11 @@ class Navigator:
         floor, basis = (floor_rooms[0][0], f"{floor_rooms[0]}호") if floor_rooms else (fs_ok, f"층 표지 '{obs['floor_sign']}'") \
             if fs_ok else (None, None)
         if floor_change:
-            floor, basis = floor_change, "층 충돌 2번 연속"
+            floor, basis = floor_change, ("층 이동 뒤 한 번" if st["floor_move"] else "층 충돌 2번 연속")
+        # 엘리베이터를 찾던 중(안내했거나 다가가는 중) 목적지 층에 와 있으면 엘리베이터 안내를 멈춘다 (지시 2)
+        el_busy = st["elevator_said"] or st["el_approach"] or st["el_ready"] is not None
+        if floor and floor != st["floor"]:
+            st["floor_move"] = None
         if floor:
             new = [x for x in floor_rooms if x not in [r for _, r in st["floor_rooms"]]]
             where = ""
@@ -344,8 +375,8 @@ class Navigator:
                     say.append(f"{basis}를 보니 1층이 아니라 {floor}층입니다.")
                 if floor == tf or not tf:
                     say.append(f"{floor}층이 맞습니다. {where}"
-                               + ("엘리베이터를 탈 필요 없습니다. 복도를 따라 문패를 찾겠습니다." if st["el_ready"] is not None else ""))
-                    st["el_ready"] = None
+                               + ("엘리베이터를 탈 필요 없습니다. 복도를 따라 문패를 찾겠습니다." if el_busy else ""))
+                    st.update(el_ready=None, elevator_said=False, el_approach=False)
                     if st["act"] not in ("목적지 접근", "도착", "문 통과"):
                         st["act"] = "직진"
                 else:
@@ -361,7 +392,11 @@ class Navigator:
             elif floor != st["floor"]:
                 say.append(f"층 판단이 바뀌었습니다: {st['floor']}층 → {floor}층.")
                 st["floor"], st["wrong_floor"] = floor, bool(tf) and floor != tf
-                st["act"] = ("엘리베이터로 돌아가기" if si > 0 else "직진") if st["wrong_floor"] else "직진"
+                if not st["wrong_floor"] and el_busy:
+                    say.append("목적지 층입니다. 엘리베이터를 탈 필요 없습니다. 복도를 따라 문패를 찾겠습니다.")
+                    st.update(el_ready=None, elevator_said=False, el_approach=False)
+                if st["act"] not in ("목적지 접근", "도착") or st["wrong_floor"]:
+                    st["act"] = ("엘리베이터로 돌아가기" if si > 0 else "직진") if st["wrong_floor"] else "직진"
             if floor_rooms:
                 st["room"] = floor_rooms[0]
             for x in new:
@@ -394,7 +429,9 @@ class Navigator:
         # ---- 목적지
         # 목적지 안전장치 (2026-11-18 사용자 지시): 목적지 번호·이름은 서로 다른 호출 2번에서 읽혀야 확정.
         # 그 전에는 '확인 중'까지만 말한다 (3단계 겹쳐 보내기에서 415 오독이 한 번의 호출로 확정된 것을 보고 추가).
-        tgt, maybe = None, False
+        # 확정과 도착을 같은 관찰로 함께 채운다 (2026-11-19 사용자 지시 3): 확정 전 읽기도 2m 이내면 도착 연속에 넣는다.
+        #   2m 안에서 서로 다른 호출 2번이 목적지를 읽으면 두 번째에 확정과 도착이 함께 된다.
+        tgt, maybe, pend_m = None, False, None
         if ROOM.match(target) and not st["wrong_floor"]:
             if target in rooms:
                 tgt = src[target]
@@ -402,16 +439,23 @@ class Navigator:
                 tr = self.mem.get(target)
                 maybe = bool(tr and tr["last"] == clock and not tr["ok"] and rflag.get(target) is not False
                              and (st["floor"] in (None, tf)))
+                if maybe:
+                    pend_m = tr["reads"][-1]["m"]
         elif not ROOM.match(target) and obs.get("dest", {}).get("seen"):
             st["dest_calls"] = st.get("dest_calls", 0) + 1 if clock - st.get("dest_last", -99) <= nav_memory.FORGET else 1
             st["dest_last"] = clock
             if st["dest_calls"] >= nav_memory.TARGET_CALLS:
                 tgt = obs["dest"]
             else:
-                maybe = True
+                maybe, pend_m = True, obs["dest"].get("m")
         if maybe and not st["arrived"]:
             note["target_pending"] = True
-            if not st.get("maybe_said"):
+            close = pend_m is not None and pend_m <= ARRIVE_M
+            st["arr_run"] = st["arr_run"] + 1 if close else 0
+            if close and st["arr_run"] == 1:
+                say.append(("" if st.get("maybe_said") else "목적지 같습니다. ") + "멈춰 주세요, 확인 중입니다.")
+                st["maybe_said"], st["act"] = True, "목적지 접근"
+            elif not st.get("maybe_said"):
                 say.append("목적지 같습니다, 확인 중입니다.")
                 st["maybe_said"] = True
                 st["act"] = "목적지 접근"
@@ -423,9 +467,12 @@ class Navigator:
             prev = st["target_seen"] or {}
             st["target_seen"] = {"t": clock, "side": side, "m": m}
             note.update(target_side=side, target_distance_m=m)
-            if st["arr_run"] >= 2:
+            if st["arrived"]:
+                pass  # 도착 안내는 한 번만 (겹쳐 보내기로 도착 뒤에 들어온 사진이 다시 말하지 않게, 2026-11-19)
+            elif st["arr_run"] >= 2:
                 where = {"C": "정면에", "L": "왼쪽 앞에", "R": "오른쪽 앞에"}[side]
-                say.append(f"{where} {target}{'호' if ROOM.match(target) else ''} 문이 있습니다.")
+                # 도착하는 걸음에는 도착 문장만 (같은 걸음의 층 확인·'문패를 찾겠습니다'와 섞이지 않게, 2026-11-19)
+                say[:] = [f"{where} {target}{'호' if ROOM.match(target) else ''} 문이 있습니다."]
                 st["arrived"], st["act"] = True, "도착"
             elif st["arr_run"] == 1:
                 say.append("멈춰 주세요, 확인 중입니다.")
@@ -434,8 +481,16 @@ class Navigator:
                 say.append(f"{target}{'호' if ROOM.match(target) else ''} 문패가 {cp.CLOCK[side]}시 방향"
                            + (f" 약 {max(1, round(m))}미터" if m else "") + "에 있습니다.")
                 st["act"] = "목적지 접근"
-        else:
+        elif not maybe:
             st["arr_run"] = 0
+        # 문 앞 빠른 확인 (2026-11-19 사용자 지시 4): 목적지가 2m 안에서 처음 보이면("멈춰 주세요") 다음 전송을
+        # 기다리지 않고 휴대폰이 곧바로 새 사진을 찍어 짧은 확인 호출을 하도록 알린다(웹 /confirm). 맞으면 그 걸음에 도착.
+        if st["arr_run"] == 0:
+            st["quick_asked"] = False
+        elif st["arr_run"] == 1 and not st["arrived"] and not st["quick_asked"] and st["quick_n"] < QUICK_MAX:
+            note["confirm_now"] = True
+            st["quick_asked"] = True
+            st["quick_n"] += 1
 
         # ---- 화살표 기록 (2초 연속 같은 방향일 때 사건으로)
         arrows = [a.get("to") for a in obs["arrows"]]

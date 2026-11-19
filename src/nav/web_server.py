@@ -306,7 +306,16 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     @app.post("/api/session/{sid}/frame", dependencies=[Depends(check_code)])
     def frame(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
               steps: int | None = Form(None), client: str = Form("{}")):
-        ws = get_ws(sid)
+        return process(get_ws(sid), image, t, heading, steps, client, quick=False)
+
+    @app.post("/api/session/{sid}/confirm", dependencies=[Depends(check_code)])
+    def confirm(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
+                steps: int | None = Form(None), client: str = Form("{}")):
+        """문 앞 빠른 확인 (2026-11-19 사용자 지시 4). 응답에 confirm이 오면 휴대폰이 곧바로 찍어 보낸다.
+        가장 가까운 문패 번호만 읽는 짧은 호출 → 같은 순서 규칙(seq)으로 상태에 넣는다. 동시 한도에 하나 더 허용."""
+        return process(get_ws(sid), image, t, heading, steps, client, quick=True)
+
+    def process(ws: WebSession, image, t, heading, steps, client, quick):
         recv = time.monotonic()
         if ws.stopped:
             return {"status": "stopped", "say": [], "reason": ws.stop_reason}
@@ -314,7 +323,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         if reason:
             return stop(ws, reason)
         with ws.slock:
-            if ws.inflight >= cfg.max_inflight:
+            if ws.inflight >= cfg.max_inflight + (1 if quick else 0):
                 ws.counts["busy"] += 1
                 return {"status": "busy", "say": []}
             ws.inflight += 1
@@ -322,13 +331,19 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
             seq = ws.seq
             ws.counts["sent"] += 1
         try:
-            path = ws.dir / "frames" / f"{seq:05d}.jpg"
+            path = ws.dir / "frames" / f"{seq:05d}{'_q' if quick else ''}.jpg"
             path.write_bytes(image.file.read())
             ws.last_frame = path
             t_cap = float(t) if t is not None else round(recv - ws.started, 2)
             t0 = time.monotonic()
             try:
-                r = ws.nav.runner.p.see(str(path))
+                if quick:
+                    q = ws.nav.runner.p.quick(str(path))
+                    base = (ws.last or {}).get("obs")
+                    r = {"obs": Navigator.quick_obs(q["plates"], base) if q["plates"] is not None else None,
+                         "call": q["call"], "cached": q["cached"]}
+                else:
+                    r = ws.nav.runner.p.see(str(path))
             except CreditLimit as e:
                 sync_credit(ws)
                 return stop(ws, str(e))
@@ -338,11 +353,12 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 if seq <= ws.last_applied or ws.stopped:  # 더 나중에 보낸 결과를 이미 넣었음
                     ws.counts["stale"] += 1
                     sync_credit(ws)
-                    ws.log({"event": "stale", "web_seq": seq, "t": t_cap, "after": ws.last_applied, "credit": r["call"].get("credit")})
+                    ws.log({"event": "stale", "web_seq": seq, "t": t_cap, "after": ws.last_applied, "credit": r["call"].get("credit"),
+                            "quick": quick})
                     return {"status": "stale", "seq": seq, "say": []}
                 t_cap = max(t_cap, float(ws.nav.clock) + 0.01) if ws.nav.records else t_cap
                 try:
-                    rec = ws.nav.step(t=round(t_cap, 2), observed=o)
+                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick)
                 except CreditLimit as e:  # 확대 재확인에서 한도
                     sync_credit(ws)
                     return stop(ws, str(e))
@@ -355,7 +371,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                     cl = json.loads(client or "{}")
                 except ValueError:
                     cl = {}
-                rec.update(web_seq=seq, wall=wall(), heading=heading, steps=steps, client=cl, frame=path.name,
+                rec.update(web_seq=seq, quick=quick, wall=wall(), heading=heading, steps=steps, client=cl, frame=path.name,
                            see_s=round(see_s, 3), server_s=round(now - recv, 3),
                            lag_s=round(now - ws.started - t_cap, 3) if t is not None else None)
                 ws.last = rec
@@ -367,7 +383,8 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 reply = {"status": "ok", "seq": seq, "say": rec["say"], "action": rec["action"], "floor": st.get("floor"),
                          "arrived": st.get("arrived"), "rooms": rec["rooms"], "error": rec["error"],
                          "server_s": rec["server_s"], "see_s": rec["see_s"], "credit": ws.credit,
-                         "target": ws.target, "detail": detail_of(ws)}
+                         "target": ws.target, "detail": detail_of(ws),
+                         "confirm": bool(rec.get("confirm_now")), "quick": quick}
                 ws.last_reply = reply
                 return reply
         finally:

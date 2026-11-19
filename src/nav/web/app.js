@@ -467,7 +467,17 @@ async function loop() {
     }
   } finally { S.loopActive = false; }
 }
-async function sendFrame(f) {
+async function quickConfirm() {   // 문 앞 빠른 확인: 다음 1.5초를 기다리지 않고 곧바로 2장 중 선명한 장을 보냄
+  let best = null, bestS = -1, at = null, heading = null;
+  const tb = now();
+  for (let i = 0; i < 2 && S.running; i++) {
+    const s = sharpness();
+    if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; }
+    if (i === 0) await sleep(120);
+  }
+  if (best && best.width && S.running) sendFrame({ canvas: best, t: at, heading, pickMs: now() - tb }, 'confirm');
+}
+async function sendFrame(f, kind) {
   S.inflight++; S.sent++;
   renderTop();
   const fd = new FormData();
@@ -478,7 +488,7 @@ async function sendFrame(f) {
   fd.append('client', JSON.stringify({ pick_ms: Math.round(f.pickMs), size: [f.canvas.width, f.canvas.height], inflight: S.inflight }));
   const t0 = now();
   try {
-    const r = await api(`/api/session/${S.sid}/frame`, { method: 'POST', body: fd, timeout: 30000 });
+    const r = await api(`/api/session/${S.sid}/${kind === 'confirm' ? 'confirm' : 'frame'}`, { method: 'POST', body: fd, timeout: 30000 });
     if (r.status === 'ok') S.lastRtt = Math.round(now() - t0);
     S.failSpoken = false; setError('');
     onFrameReply(r);
@@ -508,6 +518,7 @@ function onFrameReply(r) {
       }
       if (newer) S.lastAction = r.action;
       if (r.arrived && newer) stopAfterArrival();
+      else if (r.confirm && newer && S.running) quickConfirm();
       break;
     }
     case 'limit': case 'stopped':

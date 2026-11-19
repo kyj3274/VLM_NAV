@@ -53,6 +53,7 @@ PLATE2 = _obj({**PLATE["properties"], "img": {"type": "integer", "enum": [1, 2]}
 SEE2_SCHEMA = _obj({**SEE, "plates": {"type": "array", "items": PLATE2}})
 SEE2_DEST_SCHEMA = _obj({**SEE, "plates": {"type": "array", "items": PLATE2}, "dest": DEST})
 RECHECK_SCHEMA = _obj({"n": _S, "name": _S})
+QUICK_SCHEMA = _obj({"plates": {"type": "array", "items": _obj({k: PLATE["properties"][k] for k in ("n", "m", "on", "box")})}})
 
 SYSTEM = """너는 시각장애인 실내 길안내 시스템의 눈이다. 사용자는 가슴 높이에 휴대폰 후면 카메라를 걸고 걷는다. 사진에서 확인되는 사실만 짧게 적는다. 추측하지 않는다.
 
@@ -81,6 +82,12 @@ DEST_RULE = """
 - dest: 사용자의 목적지가 사진에 보일 때만 seen true. why는 근거(plate 문패 글자, pictogram 그림 표지, text 그 밖의 글자). 안 보이면 seen false, side none, m -1, why none."""
 
 RECHECK_SYSTEM = """이 사진은 실내 문패 부분을 잘라 확대한 것이다. 문패의 호실 번호를 그대로 적는다(n: 숫자와 하이픈만). 가려지거나 흐려 확실하지 않은 자리가 하나라도 있으면 n은 빈 문자열. name은 같은 문패의 방 이름(없으면 빈 문자열)."""
+
+# 문 앞 빠른 확인 (2026-11-19 사용자 지시 4). 목적지 번호를 알려 주지 않는다(알려 주면 그 번호로 읽으려는 쏠림이 생길 수 있어서).
+QUICK_SYSTEM = """사진에서 사용자에게 가장 가까운 방 문패 최대 2개의 호실 번호만 적는다. 없으면 빈 목록.
+- n: 호실 번호(숫자와 하이픈만). 가려지거나 흐려 확실하지 않은 자리가 하나라도 있으면 그 문패는 적지 않는다. 전화번호, 게시물 숫자는 문패가 아니다.
+- m: 사용자에서 문패까지 대략의 미터(모르면 -1). on: 문 옆이나 문 위면 door, 문과 떨어진 벽이면 wall, 여러 방을 적은 안내판 속이면 board.
+- box: 문패 영역 [왼쪽, 위, 오른쪽, 아래]. 화면 가로와 세로를 각각 100으로 본 정수."""
 
 ROOM = re.compile(r"^\d{2,4}(-\d{1,2})?$")
 
@@ -213,6 +220,18 @@ class Perceiver:
             i = p.get("img") if p.get("img") in (1, 2) else len(frames)
             p["frame"] = str(frames[min(i, len(frames)) - 1])
         return obs
+
+    def quick(self, frame):
+        """문 앞 빠른 확인: 가장 가까운 문패 번호만 짧게 읽는다. 반환: {"plates"(clean 형식, 실패면 None), "call", "cached"}"""
+        key = self._key("quick", frame)
+        if key in self.cache:
+            r = self.cache[key]
+            return {"plates": self._attach(clean(r["data"]), [frame])["plates"], "call": r["log"], "cached": True}
+        content = [jpeg_block(resize(Image.open(frame).convert("RGB"), self.send_side)), {"type": "text", "text": "가장 가까운 문패 번호를 적어라."}]
+        res = self.client.call(QUICK_SYSTEM, content, QUICK_SCHEMA, max_tokens=120, kind="quick")
+        rec = self._store(key, res)
+        plates = self._attach(clean(res.data), [frame])["plates"] if res.ok else None
+        return {"plates": plates, "call": rec["log"], "cached": False}
 
     def recheck(self, frame, plate):
         """문패 조각을 원본 해상도에서 잘라 확대해 다시 읽는다. 반환: {"n", "name", "match", "call", "cached"}"""

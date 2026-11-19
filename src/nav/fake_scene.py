@@ -45,6 +45,8 @@ class FakeScene:
         if self.delay:
             time.sleep(self.delay * random.uniform(0.7, 1.3))
         with self.lock:
+            if kind == "quick":  # 문 앞 빠른 확인: 마지막 장면의 문패를 그대로
+                return {"plates": [{k: p[k] for k in ("n", "m", "on", "box")} for p in (self.last or {}).get("plates") or []][:2]}
             if kind == "recheck":  # 마지막 장면에서 목적지에 가장 가까운 번호를 그대로 읽은 것으로
                 ps = (self.last or {}).get("plates") or []
                 t = int(self.target) if self.target.isdigit() else 0
