@@ -125,6 +125,7 @@ class Navigator:
         self.mem = nav_memory.Memory(target)
         self.mem.event(0, f"안내 시작 (목적지 {target})")
         self.si, self.sec, self.seq, self.seg_start = 0, 0, "", 0
+        self.quick_max = QUICK_MAX  # 문 앞 빠른 확인 횟수 (웹 서버가 0으로 끌 수 있음)
         self.announce = True  # 첫 걸음에 "○호로 안내를 시작합니다"를 말할지 (웹은 미리 말함)
 
     def start_head(self):
@@ -608,7 +609,7 @@ class Navigator:
         # 기다리지 않고 휴대폰이 곧바로 새 사진을 찍어 짧은 확인 호출을 하도록 알린다(웹 /confirm). 맞으면 그 걸음에 도착.
         if st["arr_run"] == 0:
             st["quick_asked"] = False
-        elif st["arr_run"] == 1 and not st["arrived"] and not st["quick_asked"] and st["quick_n"] < QUICK_MAX:
+        elif st["arr_run"] == 1 and not st["arrived"] and not st["quick_asked"] and st["quick_n"] < self.quick_max:
             note["confirm_now"] = True
             st["quick_asked"] = True
             st["quick_n"] += 1

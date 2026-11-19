@@ -55,6 +55,7 @@ class Settings:
     fake: bool = False
     fake_delay: float = 1.2
     access_code: str = ""
+    quick_confirm: bool = False        # 문 앞 빠른 확인(/confirm). 2026-11-19 사용자 지시로 기본 끔
 
 
 class DailyCredit:
@@ -220,6 +221,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         client = client_factory(dest["target"], cfg.credit_per_session)
         nav = Navigator(Runner(cp.Perceiver(client)), dest["target"])
         nav.announce = False   # "410호로 안내하겠습니다"를 이미 말함
+        nav.quick_max = nav.quick_max if cfg.quick_confirm else 0
         nav.new_segment("live_0")
         nav.clock = 0.0
         ws = WebSession(sid, d, nav, client, dest["target"],
@@ -503,13 +505,15 @@ def main():
     ap.add_argument("--credit-session", type=float, default=60.0)
     ap.add_argument("--credit-day", type=float, default=300.0)
     ap.add_argument("--max-inflight", type=int, default=3)
+    ap.add_argument("--quick-confirm", action="store_true", help="문 앞 빠른 확인 켜기 (기본 끔)")
     ap.add_argument("--save-dir", default=str(ROOT / "outputs" / "web_sessions"))
     a = ap.parse_args()
     cfg = Settings(sessions_dir=Path(a.save_dir), max_inflight=a.max_inflight, credit_per_session=a.credit_session,
-                   credit_per_day=a.credit_day, model=a.model, fake=a.fake, fake_delay=a.fake_delay)
+                   credit_per_day=a.credit_day, model=a.model, fake=a.fake, fake_delay=a.fake_delay,
+                   quick_confirm=a.quick_confirm)
     app = create_app(cfg)
     print(f"READY http://{a.host}:{a.port}  ({'가짜 응답' if a.fake else a.model}, 세션 {a.credit_session:g} / "
-          f"하루 {a.credit_day:g} 크레딧, 동시 {a.max_inflight})", flush=True)
+          f"하루 {a.credit_day:g} 크레딧, 동시 {a.max_inflight}, 빠른 확인 {'켬' if a.quick_confirm else '끔'})", flush=True)
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
 
 

@@ -222,8 +222,8 @@ def test_sensor_js_with_fake_sensors():
 
 
 def test_confirm_endpoint_quick_arrival(tmp_path):
-    """가짜 장면: 목적지 2m 안 첫 응답에 confirm → /confirm 짧은 확인으로 바로 도착."""
-    c, calls = app_with(tmp_path)
+    """가짜 장면: 목적지 2m 안 첫 응답에 confirm → /confirm 짧은 확인으로 바로 도착 (빠른 확인 켬)."""
+    c, calls = app_with(tmp_path, quick_confirm=True)
     sid = c.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
     r = None
     for k in range(25):
@@ -236,3 +236,10 @@ def test_confirm_endpoint_quick_arrival(tmp_path):
     assert q["status"] == "ok" and q["quick"] and q["arrived"]
     log = [json.loads(x) for x in (tmp_path / sid / "log.jsonl").read_text(encoding="utf-8").splitlines()]
     assert log[-1]["quick"] and log[-1]["frame"].endswith("_q.jpg")
+
+
+def test_quick_confirm_off_by_default(tmp_path):
+    c, calls = app_with(tmp_path)
+    sid = c.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
+    rs = [frame(c, sid, 1.5 * k) for k in range(25)]
+    assert not any(r.get("confirm") for r in rs) and any(r["arrived"] for r in rs)
