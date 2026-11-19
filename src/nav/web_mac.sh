@@ -1,94 +1,44 @@
 #!/bin/bash
-# 실내 길안내 웹 켜기/끄기 (Mac에서 실행). 학교 서버의 web_server.py + Mac의 Cloudflare 임시 https 주소.
-#   bash src/nav/web_mac.sh start    # 서버 웹 켜기 → Mac으로 포트 연결 → https 주소 출력
-#   bash src/nav/web_mac.sh stop     # https 주소 끄기 + 서버 웹 끄기 (GPU 반납)
-#   bash src/nav/web_mac.sh status
-#   bash src/nav/web_mac.sh records           # 지난 안내 기록 목록
-#   bash src/nav/web_mac.sh record [세션]     # 기록을 웹 모양 다시보기로 만들어 Mac에서 열기 (세션 생략 = 가장 최근)
-# 학교 서버 비밀번호를 물으면 입력. 웹 비밀번호는 서버 outputs/kyj/nav_web_password.
-# Mac이 잠자기에 들어가면 주소가 끊긴다. 주소는 켤 때마다 바뀐다.
-
-SOCK=/tmp/kyj-cnu.sock
-PORT=8765
-STATE="$HOME/.nav_web"
-mkdir -p "$STATE"
-REMOTE_LOG=/workspace/capstone/outputs/kyj/nav_web.log
-SESS=/workspace/capstone/outputs/kyj/web_sessions
-RECORDS="$HOME/nav_web_records"
-REMOTE_DIR=/workspace/capstone/src/kyj
-# 서버가 nav/ 구조로 정리됐으면 nav/web_server.py, 아니면 예전 이름(nav_web.py)으로 켬
-REMOTE_START="cd $REMOTE_DIR && if [ -f nav/web_server.py ]; then cd nav && PY=../.venv/bin/python && APP=web_server.py; else PY=.venv/bin/python && APP=nav_web.py; fi && (nohup env CUDA_VISIBLE_DEVICES=3 \$PY \$APP --port $PORT > $REMOTE_LOG 2>&1 < /dev/null &)"
-REMOTE_PID="ps aux | awk '/(nav_web|web_server).py --port $PORT/ && !/awk/ {print \$2}'"
-
-ssh_up() {  # 열어 둔 연결이 살아 있으면 그대로, 죽었으면 새로 연결 (비밀번호는 여기서 한 번만)
-  ssh -S "$SOCK" -O check cnu 2>/dev/null && return 0
-  rm -f "$SOCK"
-  echo "학교 서버에 연결합니다 (비밀번호 입력)"
-  ssh -o ControlMaster=yes -o ControlPath="$SOCK" -o ControlPersist=12h -fN cnu
-}
-
-tunnel_url() { grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$STATE/tunnel.log" 2>/dev/null | head -1; }
-
+# 실내 길안내 웹 켜기/끄기 (맥북에서만 실행. 학교 서버·ssh·GPU를 쓰지 않음).
+#   bash src/nav/web_mac.sh start          # 실제 Claude (크레딧 씀: 세션 60, 하루 300 한도)
+#   bash src/nav/web_mac.sh start --fake   # 가짜 응답 (크레딧 0)
+#   bash src/nav/web_mac.sh stop | status
+# 접속 코드: 환경변수 NAV_ACCESS_CODE, 없으면 outputs/nav_access_code 파일(없으면 새로 만듦). 화면에 한 번 보여 준다.
+# 휴대폰: start가 Cloudflare 임시 HTTPS 주소(cloudflared, 2026-11-18 사용자 승인 후 Homebrew로 설치)도 켠다.
+#   주소는 켤 때마다 바뀌고, 맥이 잠들면 끊긴다. 주소를 아는 사람도 접속 코드가 있어야 쓴다.
+cd "$(dirname "$0")/../.." || exit 1
+PORT=${PORT:-8765}
+PIDF=outputs/web_server.pid
+TPID=outputs/tunnel.pid
+TLOG=outputs/tunnel.log
+tunnel_url() { grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TLOG" 2>/dev/null | head -1; }
+LOG=outputs/web_server.log
+mkdir -p outputs
 case "$1" in
 start)
-  ssh_up || { echo "서버 연결 실패"; exit 1; }
-  if [ -z "$(ssh -S "$SOCK" -o BatchMode=yes cnu "$REMOTE_PID")" ]; then
-    echo "서버 웹을 켭니다 (모델을 올리는 데 30초~1분)"
-    ssh -S "$SOCK" -o BatchMode=yes cnu "$REMOTE_START"
-    for i in $(seq 1 60); do
-      ssh -S "$SOCK" -o BatchMode=yes cnu "grep -qE 'READY|Traceback' $REMOTE_LOG" && break; sleep 3
-    done
-    ssh -S "$SOCK" -o BatchMode=yes cnu "grep -E 'READY|Traceback' $REMOTE_LOG | tail -1"
-  else
-    echo "서버 웹은 이미 켜져 있습니다"
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then echo "이미 켜져 있습니다: http://localhost:$PORT"; exit 0; fi
+  if [ -z "$NAV_ACCESS_CODE" ]; then
+    [ -s outputs/nav_access_code ] || (LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 8 > outputs/nav_access_code)
+    NAV_ACCESS_CODE=$(cat outputs/nav_access_code)
   fi
-  curl -s -m 3 -o /dev/null "http://127.0.0.1:$PORT/" || ssh -S "$SOCK" -O forward -L "$PORT:127.0.0.1:$PORT" cnu
-  if [ -f "$STATE/tunnel.pid" ] && kill -0 "$(cat "$STATE/tunnel.pid")" 2>/dev/null; then
-    echo "https 주소는 이미 켜져 있습니다"
-  else
-    nohup cloudflared tunnel --url "http://localhost:$PORT" > "$STATE/tunnel.log" 2>&1 &
-    echo $! > "$STATE/tunnel.pid"
-    for i in $(seq 1 30); do [ -n "$(tunnel_url)" ] && break; sleep 1; done
+  NAV_ACCESS_CODE="$NAV_ACCESS_CODE" nohup .venv/bin/python src/nav/web_server.py --port "$PORT" $2 > "$LOG" 2>&1 < /dev/null &
+  echo $! > "$PIDF"
+  for i in $(seq 1 20); do grep -q READY "$LOG" && break; sleep 0.5; done
+  grep -E "READY|Error" "$LOG" | tail -1
+  echo "맥 브라우저: http://localhost:$PORT   관찰자: /monitor   기록: /records   접속 코드: $NAV_ACCESS_CODE"
+  if command -v cloudflared >/dev/null; then
+    nohup cloudflared tunnel --url "http://localhost:$PORT" > "$TLOG" 2>&1 < /dev/null &
+    echo $! > "$TPID"
+    for i in $(seq 1 40); do [ -n "$(tunnel_url)" ] && break; sleep 0.5; done
+    echo "휴대폰: $(tunnel_url)   (열리기까지 10~30초 걸릴 수 있음)"
   fi
-  echo "Mac에서:   http://localhost:$PORT"
-  echo "휴대폰/팀: $(tunnel_url)   (주소가 열리기까지 10~30초 걸릴 수 있음)"
   ;;
 stop)
-  if [ -f "$STATE/tunnel.pid" ]; then kill "$(cat "$STATE/tunnel.pid")" 2>/dev/null; rm -f "$STATE/tunnel.pid"; fi
-  echo "https 주소를 껐습니다"
-  if ssh_up; then
-    pid=$(ssh -S "$SOCK" -o BatchMode=yes cnu "$REMOTE_PID")
-    [ -n "$pid" ] && ssh -S "$SOCK" -o BatchMode=yes cnu "kill $pid" && echo "서버 웹을 껐습니다 (GPU 3 반납)"
-    ssh -S "$SOCK" -O cancel -L "$PORT:127.0.0.1:$PORT" cnu 2>/dev/null
-  else
-    echo "서버에 연결하지 못해 서버 웹은 끄지 못함 (stop을 다시 실행)"
-  fi
-  ;;
+  [ -f "$TPID" ] && kill "$(cat "$TPID")" 2>/dev/null && echo "휴대폰 주소를 껐습니다"; rm -f "$TPID"
+  [ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null && echo "서버를 껐습니다"; rm -f "$PIDF" ;;
 status)
-  if [ -f "$STATE/tunnel.pid" ] && kill -0 "$(cat "$STATE/tunnel.pid")" 2>/dev/null; then
-    echo "https 주소: 켜짐 $(tunnel_url)"
-  else
-    echo "https 주소: 꺼짐"
-  fi
-  if ssh -S "$SOCK" -O check cnu 2>/dev/null; then
-    [ -n "$(ssh -S "$SOCK" -o BatchMode=yes cnu "$REMOTE_PID")" ] && echo "서버 웹: 켜짐" || echo "서버 웹: 꺼짐"
-  else
-    echo "서버 연결: 끊김"
-  fi
-  ;;
-records)
-  ssh_up || exit 1
-  ssh -S "$SOCK" -o BatchMode=yes cnu "cd $SESS && for d in \$(ls -d 2*/ 2>/dev/null | tail -20); do d=\${d%/}; echo \"\$d  \$(grep -vc '\"event\"' \$d/log.jsonl 2>/dev/null)초\"; done"
-  ;;
-record)
-  ssh_up || exit 1
-  sid="$2"
-  [ -z "$sid" ] && sid=$(ssh -S "$SOCK" -o BatchMode=yes cnu "ls -d $SESS/2*/ | tail -1 | xargs basename")
-  [ -z "$sid" ] && { echo "기록이 없습니다"; exit 1; }
-  ssh -S "$SOCK" -o BatchMode=yes cnu "cd $REMOTE_DIR && if [ -f nav/web_replay.py ]; then cd nav && ../.venv/bin/python web_replay.py $SESS/$sid; else .venv/bin/python web_replay.py $SESS/$sid; fi" || exit 1
-  mkdir -p "$RECORDS"
-  scp -q -o BatchMode=yes -o ControlPath="$SOCK" "cnu:$SESS/$sid/replay.html" "$RECORDS/$sid.html" && echo "Mac: $RECORDS/$sid.html" && open "$RECORDS/$sid.html"
-  ;;
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then echo "서버 켜짐 http://localhost:$PORT"; else echo "서버 꺼짐"; fi
+  if [ -f "$TPID" ] && kill -0 "$(cat "$TPID")" 2>/dev/null; then echo "휴대폰 주소 켜짐 $(tunnel_url)"; else echo "휴대폰 주소 꺼짐"; fi ;;
 *)
-  echo "사용: bash $0 start|stop|status|records|record [세션]"; exit 1 ;;
+  echo "사용: bash $0 start [--fake] | stop | status"; exit 1 ;;
 esac
