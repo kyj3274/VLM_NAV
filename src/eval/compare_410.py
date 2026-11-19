@@ -1,7 +1,8 @@
 """410호 경로(1층 입구 → 엘리베이터 → 4층) 세 방식 비교.
 
   VLM_NAV     data/video/results/results_guide_410_1_2a_situ_sharp.jsonl (YOLOE·OCR·Places365 + Ollama, 서버 GPU)
-  claude_nav  $CLAUDE_NAV_RUN(claude_nav의 nav_1F-3F-4F_full_v6.jsonl) 중 1F·4F (Claude가 매 장 판단까지, 캐싱)
+  claude_nav  --claude-nav-run 또는 환경변수 CLAUDE_NAV_RUN 의 jsonl(claude_nav 저장소의 nav_1F-3F-4F_full_v6.jsonl) 중 1F·4F
+              (Claude가 매 장 판단까지, 캐싱). 없으면 이 줄은 건너뜀
               3F 장면은 이 경로에 없어서 뺀다. 4F 4.9초(맥 화면 잠금으로 87초)는 시간 통계에서 뺀다.
   새 방식     outputs/routes/guide_410_1_2a_<이름>.jsonl (Claude 인식 + VLM_NAV 규칙)
               크레딧은 캐시에서 그 프레임의 인식·재확인 호출 값을 더한다(다른 경로와 같이 쓴 호출 포함).
@@ -10,11 +11,11 @@
 """
 import argparse
 import json
+import os
 import statistics
 from pathlib import Path
 
 ROOT = next(d for d in Path(__file__).resolve().parents if (d / "data" / "video").is_dir())
-CLAUDE_NAV = Path(__import__("os").environ.get("CLAUDE_NAV_RUN", "nav_1F-3F-4F_full_v6.jsonl"))
 
 
 def stats(xs):
@@ -33,8 +34,8 @@ def vlm_nav():
             "arrived": f"4층 {arr['sec']}초" if arr else "도착 판정 없음", "says": says}
 
 
-def claude_nav():
-    recs = [json.loads(x) for x in open(CLAUDE_NAV, encoding="utf-8")]
+def claude_nav(path):
+    recs = [json.loads(x) for x in open(path, encoding="utf-8")]
     recs = [r for r in recs if r["영상"] in ("1F.mp4", "4F.mp4")]
     lat = [r["처리_시간_s"] for r in recs if not r.get("시간_통계_제외")]
     first = next((r for r in recs if r["영상"] == "4F.mp4" and "410" in json.dumps(r["변환_결과"].get("시각정보", {}).get("호실_표지판", []), ensure_ascii=False)), None)
@@ -69,8 +70,11 @@ def new(name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="claude", help="새 방식 실행 이름들(쉼표)")
+    ap.add_argument("--claude-nav-run", default=os.environ.get("CLAUDE_NAV_RUN"),
+                    help="claude_nav 실행 결과 jsonl (없으면 환경변수 CLAUDE_NAV_RUN, 둘 다 없으면 건너뜀)")
     a = ap.parse_args()
-    rows = [vlm_nav(), claude_nav()] + [new(n) for n in a.name.split(",")]
+    cn = [claude_nav(a.claude_nav_run)] if a.claude_nav_run and Path(a.claude_nav_run).is_file() else []
+    rows = [vlm_nav()] + cn + [new(n) for n in a.name.split(",")]
     print("| 방식 | 초(장) | 판단 시간 중앙값 | 최대 | 모델 호출 | 크레딧 | 410 처음 | 도착 판정 |\n|---|---|---|---|---|---|---|---|")
     for r in rows:
         med, mx, _ = r["lat"]
