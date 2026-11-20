@@ -9,10 +9,13 @@
 11/17 시험: 3층 문패 21번의 벽을 모두 맞힘 (화면 위치 기준 14번). Mac M4 장당 0.13초.
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
 
+SIDE_GAP = 0.08   # 문패가 복도 방향(가장 먼 열)에서 화면 너비의 이만큼 안이면 복도 끝 벽일 수 있어 벽 쪽을 정하지 않음
+CORRIDOR_M = 3.0  # 가장 먼 곳이 이보다 가까우면 복도가 안 보이는 사진(벽·문을 마주봄)으로 보고 벽 쪽을 정하지 않음
 HF_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 LOCAL = Path(__file__).resolve().parents[1] / "models" / "depth_anything_v2_metric_indoor_small"
 
@@ -22,12 +25,15 @@ def load():
     try:
         import torch
         from transformers import pipeline
-    except ImportError:
+    except ImportError as e:
+        print(f"[depth] torch/transformers가 없어 깊이 없이 동작합니다: {e}", file=sys.stderr, flush=True)
         return None
     dev = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     try:
         return pipeline("depth-estimation", model=str(LOCAL) if LOCAL.is_dir() else HF_ID, device=dev)
-    except Exception:  # noqa: BLE001  모델 파일이 없고 내려받을 수도 없을 때
+    except Exception as e:  # noqa: BLE001  모델 파일이 없고 내려받을 수도 없을 때, 버전이 안 맞을 때
+        print(f"[depth] 깊이 모델을 불러오지 못해 깊이 없이 동작합니다 (벽 쪽은 화면 위치로): {type(e).__name__}: {str(e)[:200]}",
+              file=sys.stderr, flush=True)
         return None
 
 
@@ -49,3 +55,10 @@ def box_distance(dep, box):
     patch = dep[int(max(0, y0 - 0.005) * h):int(min(1, y1 + 0.005) * h) + 1,
                 int(max(0, x0 - pad) * w):int(min(1, x1 + pad) * w) + 1]
     return round(float(np.median(patch)), 1)
+
+
+def wall_side(info, cx):
+    """문패 글자 가운데 x(0~1) → '왼쪽'/'오른쪽', 정할 수 없으면 '?' (Memory.see가 표를 넣지 않음)."""
+    if info["far_m"] < CORRIDOR_M or abs(cx - info["far_x"]) < SIDE_GAP:
+        return "?"
+    return "왼쪽" if cx < info["far_x"] else "오른쪽"
