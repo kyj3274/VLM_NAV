@@ -136,12 +136,42 @@ function sharpness() {  // 긴 변 360으로 줄인 흑백 사진의 라플라�
   }
   return sq / n - (sum / n) ** 2;
 }
-function pickInto(k, best, n) {  // 후보가 지금까지 중 가장 선명하면 k번째 칸에 그려 둠
+function pickInto(k, best, n, into) {  // 후보가 지금까지 중 가장 선명하면 k번째 칸에 그려 둠
   const v = sharpness();
-  if (v > best) keep(slots[k]);
+  if (v > best) keep((into || slots)[k]);
   return Math.max(v, best);
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// 휴대폰 센서 기록 (11/20 추가): 걸음 수, 몸을 돌린 각도(자이로 적분), 나침반 방향. 사진과 함께 X-Client로 보내 log.jsonl에 남김.
+// 아이폰은 화면을 누른 순간에 권한을 받아야 해서 '안내 시작'을 누를 때 요청함
+const sensor = {on: false, steps: 0, yaw: 0, heading: null, lastT: null, accF: 9.8, above: false, lastStep: 0};
+async function startSensors() {
+  if (sensor.on) return;
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+      if (await DeviceMotionEvent.requestPermission() !== "granted") { log("센서 권한이 없어 센서 없이 안내합니다", "vlm"); return; }
+    }
+    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
+      await DeviceOrientationEvent.requestPermission().catch(() => {});
+    }
+  } catch (e) { log("센서를 켤 수 없습니다: " + e.message, "vlm"); return; }
+  window.addEventListener("devicemotion", e => {
+    const now = performance.now(), dt = sensor.lastT ? (now - sensor.lastT) / 1000 : 0; sensor.lastT = now;
+    const r = e.rotationRate;  // 휴대폰을 세워 들면 몸을 돌리는 축은 휴대폰 세로축(gamma)
+    if (r && r.gamma != null && dt > 0 && dt < 0.5) sensor.yaw += r.gamma * dt;
+    const a = e.accelerationIncludingGravity;  // 걸음: 가속도 크기의 봉우리 (0.3초 안에 두 번 세지 않음)
+    if (a && a.x != null) {
+      const m = Math.hypot(a.x, a.y, a.z); sensor.accF = 0.8 * sensor.accF + 0.2 * m;
+      if (!sensor.above && sensor.accF > 11.0 && now - sensor.lastStep > 300) { sensor.steps++; sensor.lastStep = now; sensor.above = true; }
+      else if (sensor.above && sensor.accF < 10.0) sensor.above = false;
+    }
+  });
+  window.addEventListener("deviceorientation", e => {
+    sensor.heading = e.webkitCompassHeading != null ? e.webkitCompassHeading : (e.alpha != null ? (360 - e.alpha) % 360 : null);
+  });
+  sensor.on = true;
+}
+const sensorNow = () => sensor.on ? {steps: sensor.steps, yaw: Math.round(sensor.yaw), heading: sensor.heading == null ? null : Math.round(sensor.heading)} : null;
 async function api(path, body) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Pass": $("pass").value},
                                body: JSON.stringify(body || {})});
@@ -182,7 +212,7 @@ function show(r, clientSec) {
   $("sPlace").textContent = (r.place || []).length ? r.place.map(([n, p]) => `${n} ${p.toFixed(2)}`).join(", ") : "-";
   vlmCount += r.vlm.length; $("sVlm").textContent = vlmCount + "번";
   const c = r.client || {};
-  $("sTime").textContent = `촬영 ${(c.pickMs / 1000 || 0).toFixed(1)}초 + 사진 만들기 ${(c.encMs / 1000 || 0).toFixed(2)}초 + 보내고 받기 ${clientSec.toFixed(1)}초 (그중 서버 ${r.server_seconds}초) · ${c.sent || "?"}장 ${Math.round((c.bytes || 0) / 1024)}KB, ${(r.size || []).join("×")}`;
+  $("sTime").textContent = `고르기 ${(c.pickMs / 1000 || 0).toFixed(1)}초(앞 응답을 기다리는 동안) · 사진 만들기 ${(c.encMs / 1000 || 0).toFixed(2)}초 · 보내고 받기 ${clientSec.toFixed(1)}초 (그중 서버 ${r.server_seconds}초) · ${c.sent || "?"}장 ${Math.round((c.bytes || 0) / 1024)}KB, ${(r.size || []).join("×")}` + (sensor.on ? ` · 센서: 걸음 ${sensor.steps}, 회전 ${Math.round(sensor.yaw)}°` + (sensor.heading != null ? `, 방위 ${Math.round(sensor.heading)}°` : "") : " · 센서 없음");
   for (const v of r.vlm) log(`VLM 호출: ${(v.why || []).join(", ")}`, "vlm");
   if (r.advice) log(`VLM 추천: ${r.advice.action || "답 없음"}` + (r.advice.veto ? ` → 규칙이 막음 (${r.advice.veto})` : ""), "vlm");
   if (state !== "running") return;  // 응답을 기다리는 사이 일시 정지했으면 말하지 않음
@@ -218,7 +248,7 @@ async function stepWith(canvases, pickMs) {
   try {
     const resp = await fetch("/api/step", {method: "POST", body: new Blob(blobs), headers: {
       "Content-Type": "application/octet-stream", "X-Pass": $("pass").value, "X-Frames": blobs.map(b => b.size).join(","),
-      "X-Client": JSON.stringify({pick_ms: Math.round(pickMs || 0), enc_ms: Math.round(encMs), bytes, prev_rt_ms: Math.round(lastRt)})}});
+      "X-Client": JSON.stringify({pick_ms: Math.round(pickMs || 0), enc_ms: Math.round(encMs), bytes, prev_rt_ms: Math.round(lastRt), sensor: sensorNow()})}});
     const r = await resp.json();
     if (r.error) throw new Error(r.error);
     timers.forEach(clearTimeout);
@@ -267,6 +297,7 @@ $("files").onchange = async () => {
 
 // 3. 안내
 $("btnGo").onclick = async () => {
+  if (source === "camera") startSensors();  // 누른 순간에 권한 요청 (아이폰)
   vlmCount = 0; $("log").innerHTML = ""; $("sRooms").textContent = "-"; $("sVlm").textContent = "0번";
   try {
     const r = await api("/api/start", {target: $("target").value, quality: $("quality").value,
@@ -290,17 +321,43 @@ $("btnElev").onclick = async () => { try { await api("/api/segment"); log("엘�
 
 async function waitWhilePaused(id) { while (state === "paused" && id === runId) await sleep(200); return state === "running" && id === runId; }
 
+// 카메라: 서버 응답을 기다리는 동안에도 계속 찍으며 가장 선명한 장을 골라 둔다 (고르기만 따로 1초 기다리지 않음).
+// 응답이 오면 그동안 고른 장을 바로 보낸다 → 걸음 간격 ≈ 왕복 시간(약 1초). 11/20 측정: 고르기 1.0초 + 왕복 0.8~1.2초 = 2초였음
+// 칸 두 벌을 번갈아 써서, 보내는 중인 사진을 다음 고르기가 덮어쓰지 않게 함
+const MIN_WIN = 500;  // 응답이 아주 빨라도 이만큼은 찍어서 고름 (약 6장)
+const slotsB = [...Array(PER_SEC)].map(() => document.createElement("canvas"));
+let win = null;
+function newWindow(prev) {
+  const set = prev && prev.set === slots ? slotsB : slots;
+  return {t0: performance.now(), set, bests: Array(PER_SEC).fill(-1)};
+}
 async function cameraLoop(id) {
-  while (await waitWhilePaused(id)) {
-    const bests = [], n = CAND, t0 = performance.now(), dt = 1000 / PER_SEC / n;  // 1장만 보낼 때도 선명도를 재야 해서 항상 12장을 봄
-    for (let k = 0; k < PER_SEC && state === "running"; k++) {
-      let best = -1;
-      for (let j = 0; j < n; j++) { best = pickInto(k, best, n); await sleep(Math.max(0, t0 + (k * n + j + 1) * dt - performance.now())); }
-      bests.push(best);
+  win = newWindow(null);
+  const dt = 1000 / PER_SEC / CAND;  // 약 83ms마다 한 장 (1초 12장)
+  let sampling = true;
+  (async () => {  // 고르기: 응답을 기다리는 동안에도 돎
+    while (sampling && id === runId) {
+      if (state === "running" && video.videoWidth) {
+        const k = Math.min(PER_SEC - 1, Math.floor((performance.now() - win.t0) / (1000 / PER_SEC)));  // 4장 모드: 0.25초 구간마다 한 장
+        win.bests[k] = pickInto(k, win.bests[k], CAND, win.set);
+      }
+      await sleep(dt);
     }
-    if (state !== "running" || id !== runId) continue;  // 사진 모으는 중에 멈췄으면 이번 1초는 버림
-    try { await stepWith(choose(bests), performance.now() - t0); } catch (e) { log("오류: " + e.message, "vlm"); await sleep(1000); }
-  }
+  })();
+  try {
+    while (await waitWhilePaused(id)) {
+      if (performance.now() - win.t0 > 5000) win = newWindow(win);  // 오래 멈췄다 다시 시작하면 새로 고름
+      const need = want > 1 ? 1000 : MIN_WIN;  // 4장을 달라고 하면 1초에 고루 퍼지게
+      await sleep(Math.max(0, win.t0 + need - performance.now()));
+      if (state !== "running" || id !== runId) continue;
+      const cur = win; win = newWindow(cur);  // 고른 칸은 보내는 데 쓰고, 다음 고르기는 다른 칸에
+      const filled = cur.bests.map((v, k) => v >= 0 ? k : -1).filter(k => k >= 0);
+      if (!filled.length) continue;
+      const pick = want > 1 ? filled.map(k => cur.set[k])
+                            : [cur.set[filled.reduce((a, k) => cur.bests[k] > cur.bests[a] ? k : a, filled[0])]];
+      try { await stepWith(pick, performance.now() - cur.t0); } catch (e) { log("오류: " + e.message, "vlm"); await sleep(1000); }
+    }
+  } finally { sampling = false; }
 }
 async function fileLoop(id) {
   while (fileIdx < files.length && id === runId) {

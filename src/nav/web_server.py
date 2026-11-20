@@ -77,6 +77,9 @@ def step(body):
     if not paths:
         return {"error": "사진이 없습니다"}
     t0 = time.perf_counter()
+    client = body.get("client") or {}
+    nav.sensor = client.get("sensor")  # 휴대폰 센서(걸음 수·회전), 없으면 None
+    nav.now = time.time()              # 실제 시각: 걸은 거리 추정(센서가 없을 때)용
     rec = nav.step(paths)
     S["runner"].cache.clear()  # 웹은 같은 사진을 다시 보지 않으므로 메모리만 차지
     with open(S["dir"] / "log.jsonl", "a", encoding="utf-8") as f:
