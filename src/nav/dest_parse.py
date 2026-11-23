@@ -49,11 +49,53 @@ def sino(word: str) -> int | None:
     return int(digits) if digits else None
 
 
+# 숫자로 바뀐 앞자리 + 한글로 남은 끝자리 (2026-11-23 시험 3: "사백십이호"를 아이폰 받아쓰기가 "410 이호"로 적음)
+_TAIL1 = re.compile(r"(?<!\d)(\d\d)0\s*([일이삼사오육칠팔구])(?=\s*(?:호|$))")        # "410 이호" → 412
+_TAIL2 = re.compile(r"(?<!\d)(\d)00\s*십\s*([일이삼사오육칠팔구])?(?=\s*(?:호|$))")  # "400 십이호" → 412
+READ = "공일이삼사오육칠팔구"
+
+
+def parse_room_how(text: str) -> tuple[str | None, str]:
+    """(3자리 호실 번호 또는 None, 어떻게 찾았나). 어떻게: clean(숫자 세 자리 + 호) / merged(숫자와 한글 끝자리 합침) /
+    spaced(띄어 쓴 숫자) / noisy(숫자 세 자리지만 앞뒤에 다른 글자) / korean(한글 숫자)."""
+    t = (text or "").strip()
+    if not t:
+        return None, ""
+    t = t.replace("%", "호").replace("％", "호")
+    m = _TAIL1.search(t)
+    if m:
+        return m.group(1) + str(DIG[m.group(2)]), "merged"
+    m = _TAIL2.search(t)
+    if m:
+        return m.group(1) + "1" + (str(DIG[m.group(2)]) if m.group(2) else "0"), "merged"
+    t2 = re.sub(r"(?<=\d)[\s,.-]+(?=\d)", "", t)          # "4 1 0" → "410"
+    m = re.search(r"(?<!\d)(\d{3})(?!\d)", t2)
+    if m:
+        if t2 != t:
+            return m.group(1), "spaced"
+        rest = t[m.end():].lstrip()   # 숫자 바로 뒤가 '호'·끝이면 깨끗하게 들은 것 ("410 포"는 '호'를 잘못 들은 것일 수 있음)
+        return m.group(1), "clean" if (rest == "" or rest[0] == "호") else "noisy"
+    for s in (re.sub(r"\s+", "", t), t):
+        for run in sorted(_KNUM.findall(s), key=len, reverse=True):
+            v = sino(run)
+            if v is not None and 100 <= v <= 999:
+                return str(v), "korean"
+    return None, ""
+
+
+def read_digits(room: str) -> str:
+    """'412' → '사, 일, 이' (애매하게 들었을 때 한 자리씩 되읽기)."""
+    return ", ".join(READ[int(c)] for c in room if c.isdigit())
+
+
 def parse_room(text: str) -> str | None:
     """말한 문장에서 3자리 호실 번호. 없으면 None."""
     t = (text or "").strip()
     if not t:
         return None
+    room, how = parse_room_how(t)
+    if room:
+        return room
     t = t.replace("%", "호").replace("％", "호")
     t = re.sub(r"(?<=\d)[\s,.-]+(?=\d)", "", t)          # "4 1 0" → "410"
     m = re.search(r"(?<!\d)(\d{3})(?!\d)", t)
@@ -102,8 +144,16 @@ def parse_here_floor(text: str, alone: bool = False) -> str | None:
 def parse_destination(text: str) -> dict | None:
     """{"원문", "target": "410", "name": "410호", "floor": "4", "here": "1" 또는 None} 또는 None.
     here: 같이 말한 지금 층 ("1층인데 410호" → "1")."""
-    room = parse_room(text)
+    room, how = parse_room_how(text)
     if room is None:
         return None
+    # 애매하게 들었으면(숫자 세 자리 + 호가 아닌 모양) 한 자리씩 되읽어 사용자가 바로 알 수 있게 (2026-11-23 사용자 지시)
+    readback = how != "clean"
     return {"원문": (text or "").strip(), "target": room, "name": f"{room}호", "floor": room[0],
-            "here": parse_here_floor(text)}
+            "here": parse_here_floor(text), "how": how, "readback": read_digits(room) if readback else ""}
+
+
+def announce(dest: dict) -> str:
+    """'412호로 안내하겠습니다.' 애매하면 '사, 일, 이. 412호로 안내하겠습니다.'"""
+    rb = dest.get("readback")
+    return (f"{rb}. " if rb else "") + f"{dest['name']}로 안내하겠습니다."

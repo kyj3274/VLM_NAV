@@ -83,6 +83,8 @@ EXIT_DUP = 20     # 내림 처리 뒤 이 초 안에 다시 오는 내림(버튼
                   # 자동 감지는 내린 뒤 복도 사진 2장(약 3초) + 응답(2~4초) 뒤라, 그 무렵 사용자가 버튼을 눌러도 겹치지 않게 넉넉히.
 SCAN_SEC = 6      # 내린 직후 둘러보기 최대 시간. 그동안은 진행 안내(직진 등)를 하지 않는다
 EXIT_SAY = "잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
+OTHER_FLOOR_PHOTOS = 2   # 내린 뒤 가정한 층(엘리베이터로 이동한 층)은 다른 층 문패가 서로 다른 사진 이 장수에서 읽혀야 바꿈
+OTHER_FLOOR_SEC = 20     # 그 사진들은 이 초 안에서
 ACTIONS = ["문 통과", "직진", "왼쪽", "오른쪽", "뒤로 돌기", "엘리베이터 타기", "엘리베이터로 돌아가기",
            "멈추고 둘러보기", "목적지 접근", "도착",
            "계단으로 올라가기", "계단으로 내려가기", "계단에서 나가기"]  # 계단 3개: 2026-11-19 사용자 지시 5
@@ -261,6 +263,10 @@ class Navigator:
             src = "엘리베이터 표시창" if carry else None
             if keep:
                 carry, src = keep
+            if carry is None and self.tf:
+                # 2026-11-23 사용자 지시: 내린 층은 기본으로 엘리베이터로 이동한 층("○층을 누르세요"라고 한 층 = 목적지 층).
+                # 시험 1·3에서 4층에 내린 뒤 층을 20~40초 몰랐음. 다른 층 증거가 나오면 그때 고친다(OTHER_FLOOR_PHOTOS).
+                carry, src = self.st.get("press_floor") or self.tf, "엘리베이터 이동"
             self.last_exit, self.exit_say = self.clock, True
             self.st.update(floor=carry, wrong_floor=bool(carry and self.tf) and carry != self.tf, room=None,
                            floor_rooms=[], elevator_said=False, el_run=0,
@@ -268,19 +274,42 @@ class Navigator:
                            trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None,
                            door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False,
                            floor_move=None, quick=None, quick_n=0, el_cand=None, el_last=None, el_miss=0,
-                           el_passed=False, stair=new_stair(), floor_temp=src == "엘리베이터 표시창",
+                           el_passed=False, stair=new_stair(), floor_temp=src in ("엘리베이터 표시창", "엘리베이터 이동"),
                            floor_src=src, ask_t=None, check_t=None, el_disp=None,
+                           assumed=src in ("엘리베이터 표시창", "엘리베이터 이동"), other_seen={}, exit_h=None,
                            elev_run=0, elev_in=False, hall_run=0, exit_cand=None, dir=None, far={},
                            scan=self.new_scan(max(self.seg_start, self.clock)))  # 자동 감지: 내림을 알고 "멈춰서 비춰 주세요"라고 한 때부터
             if carry and src == "엘리베이터 표시창":
                 self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
+            elif carry and src == "엘리베이터 이동":
+                self.mem.event(self.clock, f"내린 층 {carry}층으로 봄 (엘리베이터로 이동한 층, 다른 층 증거가 나오면 고침)")
             elif carry:
                 self.mem.event(self.clock, f"내린 층 {carry}층 (내림을 알기 전 복도 사진의 {src})")
 
     def exit_sentence(self):
-        st = self.st
-        disp = f"표시창으로는 {st['floor']}층입니다. " if st["floor"] and st["floor_src"] == "엘리베이터 표시창" else ""
-        return f"엘리베이터에서 내렸습니다. {disp}{EXIT_SAY}"
+        """내린 직후 한 번: '엘리베이터에서 내렸습니다. 4층에 내렸습니다. 410호를 찾겠습니다. 잠시 멈춰서 …'.
+        내린 층이 목적지 층이 아니면(표시창이 다른 층) 바로 엘리베이터로 돌아가라고 한다."""
+        st, tf = self.st, self.tf
+        f = st["floor"]
+        if not f:
+            return f"엘리베이터에서 내렸습니다. {EXIT_SAY}"
+        head = f"엘리베이터에서 내렸습니다. {f}층에 내렸습니다. "
+        if tf and f != tf:
+            st["act"] = "엘리베이터로 돌아가기"
+            return head + f"{self.target}호는 {tf}층에 있습니다. 엘리베이터로 돌아가 {tf}층을 누르세요."
+        return head + (f"{self.target}호를 찾겠습니다. " if ROOM.match(self.target) else "") + EXIT_SAY
+
+    def elevator_way(self, heading):
+        """내린 뒤 엘리베이터 쪽 (내릴 때 나침반 방향의 반대). 나침반이 없으면 '내린 곳 뒤쪽'."""
+        h0 = self.st.get("exit_h")
+        if h0 is None or heading is None:
+            return "엘리베이터는 내린 곳 뒤쪽에 있습니다."
+        rel = ((h0 + 180) - heading + 540) % 360 - 180
+        if abs(rel) > 90:  # 뒤쪽: 돌고 난 뒤 기준 시계 방향
+            c = round(((rel + 180 + 540) % 360 - 180) / 30) % 12 or 12
+            return f"뒤로 돌아 {c}시 방향입니다."
+        c = round(rel / 30) % 12 or 12
+        return f"엘리베이터는 {c}시 방향입니다."
 
     def exit_elevator(self, source="버튼"):
         """엘리베이터에서 내림 (웹 버튼 "내렸어요"). 반환: 바로 말할 문장들. EXIT_DUP초 안에 이미 내림을 처리했으면
@@ -309,6 +338,13 @@ class Navigator:
         # 없는 패널을 본 사진이 '탔음'이 되지 않게).
         e = obs.get("elev") or {}
         close = e.get("why") in ("doors", "panel") and (e.get("m") is None or e["m"] <= ELEV_CLOSE_M)
+        near = e.get("why") in ("doors", "panel", "button", "display") and (e.get("m") is None or e["m"] <= ELEV_CLOSE_M)
+        if st["elev_in"] and e.get("why") == "button" and (e.get("m") or 99) <= ELEV_CLOSE_M and obs["place"] != "in_elev":
+            # 탄 뒤 2m 안에 위·아래 호출 버튼 = 밖 (2026-11-23 시험 3: 1층에서 기다리며 닫힌 문을 '안'으로 3장 본 뒤
+            # 호출 버튼 장면 3장이 하차로 잡힐 뻔함) → 탄 것을 취소
+            st.update(elev_in=False, elev_run=0, hall_run=0, exit_cand=None, floor_move=None)
+            self.mem.event(clock, "탄 뒤 호출 버튼이 가까이 보임: 탄 것이 아님 (취소)")
+            return None
         inside = obs["place"] == "in_elev" or (st["elev_in"] and (obs.get("panel") or obs.get("closed_doors") or close))
         if inside and obs["place"] != "in_elev":
             self.mem.event(clock, "탄 뒤 엘리베이터 문이 가까이 보임(" + ("닫힌 문만" if obs.get("closed_doors") else
@@ -323,7 +359,7 @@ class Navigator:
                 st["floor_move"] = {**(st["floor_move"] or {"t": clock, "why": "엘리베이터 안"}), "last": clock}
             return None
         st["elev_run"] = 0
-        if not st["elev_in"] or obs["place"] not in HALL:
+        if not st["elev_in"] or obs["place"] not in HALL or near:  # 2m 안에 엘리베이터가 보이는 장면은 하차 근거가 아님
             st["hall_run"], st["exit_cand"] = 0, None
             return None
         st["hall_run"] += 1
@@ -396,8 +432,9 @@ class Navigator:
         st = self.st
         places = Counter(p for p in loc["places"][-LOCATE_SEC:] if p and p != "unknown")
         place = cp.PLACE_KO.get(places.most_common(1)[0][0]) if places else None
-        st["loc"], st["act"], st["check_t"] = None, "멈추고 둘러보기", self.clock
-        return [(f"여기는 {place}인 것 같습니다. " if place else "") + CHECK_SAY]
+        # 2026-11-23 사용자 지시 7: 위치 파악이 끝났는데 층 근거가 없으면 바로 묻는다 (시험 3: 15초에 처음 물어 44초에 앎)
+        st["loc"], st["act"], st["check_t"], st["ask_t"] = None, "멈추고 둘러보기", self.clock, self.clock
+        return [(f"여기는 {place}인 것 같습니다. " if place else "") + ASK_SAY]
 
     def check_say(self, say, head=""):
         """층을 모를 때 '지금 층을 확인하고 있습니다…'를 말한다 (QUIET_SAY초 안에 이미 말했으면 되풀이하지 않음)."""
@@ -482,6 +519,8 @@ class Navigator:
                 st["act"] = "멈추고 둘러보기"
         if loc is not None:
             loc["places"].append(obs["place"])
+        if first and si > 0 and st.get("exit_h") is None:
+            st["exit_h"] = heading  # 내린 직후 바라보는 방향 (엘리베이터는 그 반대쪽)
         if first and si > 0:  # 내린 직후: 멈춰서 둘러보기 (B6). 웹 버튼은 응답에서 이미 말함
             if self.exit_say:
                 say.append(self.exit_sentence())
@@ -644,9 +683,38 @@ class Navigator:
                 st["el_ready"] = clock
                 self.check_say(say)
 
+        # ---- 내린 뒤 가정한 층(엘리베이터로 이동한 층·표시창) (2026-11-23 사용자 지시 5)
+        # 다른 층 층 표시가 또렷하게 한 번, 또는 다른 층 문패가 서로 다른 사진 2장에서 읽히면(확대 재확인이 다른 번호로
+        # 읽은 것은 빼고) 고친다. 오독 한 번으로는 바꾸지 않는다. 같은 층 문패·층 표시가 보이면 확정 근거로 바꾼다.
+        floor_change, wrong_assumed = None, None
+        if st.get("assumed") and st["floor"]:
+            seen = st.setdefault("other_seen", {})
+            for p in plates:
+                if ROOM.match(p["n"]) and p["n"][0] != st["floor"] and rflag.get(p["n"]) is not False:
+                    lst = seen.setdefault(p["n"][0], [])
+                    if not lst or lst[-1][0] != self.n:
+                        lst.append([self.n, clock, p["n"]])
+            for dg in list(seen):
+                seen[dg] = [x for x in seen[dg] if clock - x[1] <= OTHER_FLOOR_SEC]
+            fs0 = obs["floor"]
+            if fs0 and fs0 != st["floor"]:
+                wrong_assumed = (fs0, f"층 표시 '{obs['floor_sign']}'")
+            else:
+                hit = next((dg for dg, l in seen.items() if len(l) >= OTHER_FLOOR_PHOTOS), None)
+                if hit:
+                    wrong_assumed = (hit, "문패 " + ", ".join(dict.fromkeys(x[2] for x in seen[hit])) + f"호 (사진 {len(seen[hit])}장)")
+            if wrong_assumed:
+                floor_change = wrong_assumed[0]
+                self.mem.event(clock, f"내린 층이 다름: {st['floor']}층 → {floor_change}층 ({wrong_assumed[1]})")
+            else:
+                rooms = [x for x in rooms if not ROOM.match(x) or x[0] == st["floor"]]  # 한 번 읽힌 다른 층 번호는 아직 안 씀
+                same = [x for x in rooms if ROOM.match(x) and x[0] == st["floor"]]
+                if same or (fs0 and fs0 == st["floor"]):
+                    why = f"{same[0]}호" if same else f"층 표시 '{obs['floor_sign']}'"
+                    st.update(assumed=False, floor_temp=False, floor_src=why)
+                    self.mem.event(clock, f"내린 층 {st['floor']}층 확인 ({why})")
         # ---- 층 충돌: 한 번 정한 층과 첫 자리가 다른 번호는 2초 연속일 때만 인정
-        floor_change = None
-        other = [x for x in rooms if st["floor"] and ROOM.match(x) and x[0] != st["floor"]]
+        other = [x for x in rooms if st["floor"] and ROOM.match(x) and x[0] != st["floor"]] if not floor_change else []
         one_shot = st["floor_move"] or st["floor_temp"]  # 계단·층 표시 뒤, 또는 임시 층(계단 표시·엘리베이터 표시창)
         if other:
             digit = other[0][0]
@@ -665,7 +733,7 @@ class Navigator:
         fs_ok = None
         if fs and st["floor"] is None:
             fs_ok = fs
-        elif fs and fs != st["floor"] and not floor_change:
+        elif fs and fs != st["floor"] and not floor_change and not st.get("assumed"):
             if one_shot:
                 floor_change = fs
                 self.mem.event(clock, f"층 이동 뒤 층 표시 '{obs['floor_sign']}': {st['floor']}층 → {fs}층 (연속 2번 안 기다림)")
@@ -681,7 +749,7 @@ class Navigator:
         floor, basis = (floor_rooms[0][0], f"{floor_rooms[0]}호") if floor_rooms else (fs_ok, f"층 표지 '{obs['floor_sign']}'") \
             if fs_ok else (None, None)
         if floor_change:
-            floor, basis = floor_change, ("층 이동 뒤 한 번" if one_shot else "층 충돌 2번 연속")
+            floor, basis = floor_change, (wrong_assumed[1] if wrong_assumed else "층 이동 뒤 한 번" if one_shot else "층 충돌 2번 연속")
         # 엘리베이터 안 층 표시창 (2026-11-23 사용자 지시 4, 프롬프트 판 4의 ed 칸): 엘리베이터 안에서 또렷하면 바로 그 층.
         # 타고 가는 동안 바뀌므로 다르면 바로 바꾸고, 다른 층 확정 문패 한 번이면 문패를 따르도록 임시 층으로 둔다.
         ed = obs.get("elev_floor") if obs["place"] == "in_elev" else None
@@ -738,6 +806,18 @@ class Navigator:
                                    + ("" if st["elevator_said"] else f"엘리베이터를 찾아 {tf}층으로 가겠습니다. 앞으로 천천히 직진해 주세요."))
                         if not st["elevator_said"]:
                             st["act"] = "직진"
+            elif floor != st["floor"] and wrong_assumed:
+                # 내린 층이 다름: 오류를 먼저 알리고 바로 행동 (2026-11-23 사용자 지시 5)
+                st.update(floor=floor, wrong_floor=bool(tf) and floor != tf, assumed=False, floor_temp=False)
+                if st["wrong_floor"]:
+                    say[:] = [x for x in say if not x.startswith("엘리베이터에서 내렸습니다")]
+                    say.append(f"층이 다릅니다. 여기는 {floor}층입니다. 엘리베이터로 돌아가 {tf}층을 누르세요. "
+                               + self.elevator_way(heading))
+                    st["act"] = "엘리베이터로 돌아가기"
+                    if self.scanning():
+                        st["scan"].update(done=True, why="다른 층")
+                else:
+                    say.append(f"층이 다릅니다. 여기는 {floor}층, 목적지 층입니다. 문패를 찾겠습니다.")
             elif floor != st["floor"]:
                 say.append(f"층 판단이 바뀌었습니다: {st['floor']}층 → {floor}층.")
                 st["floor"], st["wrong_floor"] = floor, bool(tf) and floor != tf
@@ -953,6 +1033,7 @@ class Navigator:
         # ---- 위치 파악 시간 끝
         if st["loc"] is not None and clock + 1 >= st["loc"]["until"] and not st["arrived"]:
             say.extend(self.locate_end(st["loc"]))
+            note["ask_floor"] = True
         # ---- 엘리베이터 앞에서 층을 모름: 층을 알게 되면 대기 표시를 지운다 (층 모른 채 타라고 하지 않음, 2026-11-23)
         if st["el_ready"] is not None and st["floor"] is not None:
             st["el_ready"] = None
@@ -1107,6 +1188,11 @@ class Navigator:
                 est = f"지금 약 {sign[0]}층입니다. " if len(sign) == 1 else f"지금 약 {sign[0]}층과 {sign[-1]}층 사이입니다. "
             return f"계단입니다. {est}{tf}층까지 {'올라' if act == '계단으로 올라가기' else '내려'}가세요."
         if act == "엘리베이터 타기":
+            # 상태에 맞는 문장 (2026-11-23 시험 3: 같은 문장 되풀이를 휴대폰이 읽지 않아 88초 무음)
+            if st["elev_in"]:
+                return f"엘리베이터 안입니다. {tf}층에 도착하면 내리세요."
+            if obs.get("place") in ("elev_hall", "in_elev") or (obs.get("elev") or {}).get("cand"):
+                return f"엘리베이터를 기다리고 있습니다. 문이 열리면 타고 {tf}층을 누르세요."
             return f"엘리베이터를 타고 {tf}층을 누르세요."
         if act == "목적지 접근":
             return f"{target}호를 확인하고 있습니다. 천천히 다가가세요."

@@ -13,7 +13,7 @@ const now = () => performance.now();
 
 const S = {
   code: '', sid: null, target: '', name: '', running: false, loopActive: false, listening: false, prep: null,
-  heading: null, beta: null, gamma: null, clog: [], oriAsked: false, oriOk: null, motionAsked: false, motionOk: null,
+  heading: null, beta: null, gamma: null, clog: [], oriState: undefined, motionState: undefined, permLog: [], oriAsked: false, oriOk: null, motionAsked: false, motionOk: null,
   stream: null, cameraDenied: false, ultrawideId: null, cameraLabel: '', wakeLock: null, zoomMin: null, camInfo: null,
   prevNet: null,
   audio: null, speechUnlocked: false, voice: null, lastSpoken: '', lastSpeech: '', priorityActive: false,
@@ -24,7 +24,7 @@ const S = {
   // 2026-11-23 판단 시간 줄이기: JPEG 품질 0.7(해상도 그대로), 선명도 sharpMin 이상이면 구간 시작 minSendMs 뒤 바로 보냄
   //   sharpMin 320 = 지난 휴대폰 시험에서 문패 번호가 읽힌 사진 17장의 최솟값(327) 바로 아래 (같은 계산, 160px 흑백 라플라시안 분산)
   // 빠른 확인: 응답에 confirm이 오면 quickGapMs 간격으로 선명한 2장을 찍어 동시에 보냄 (한 장당 최대 quickWaitMs 기다림)
-  jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false, quickSpeechWaitMs: 1000, sayStartAt: -1,
+  jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false, quickSpeechWaitMs: 3000, sayStartAt: -1, sayStartSeq: null,
 };
 
 // 휴대폰 쪽 기록 (2026-11-23 시험 전 보강): 응답 받은 시각, 음성 시작·끝, 네트워크 오류를 모아 3초마다 서버로 보냄
@@ -56,25 +56,20 @@ function showCaption(text, err = false) {
   for (const id of ['caption', 'caption0']) { $(id).textContent = text; $(id).classList.toggle('err', !!err); }
 }
 // opts.force: 같은 문장도 읽음 / opts.queue: 앞 음성을 끊지 않음 / opts.priority: 끝날 때까지 다른 안내가 끊지 못함
+// 2026-11-23: 브라우저 음성 대기열 대신 SpeechQueue(speech.js)가 한 문장씩 재생 (사라지는 문장·끊은 직후 무음 대책)
+const SQ = ('speechSynthesis' in window) ? new SpeechQueue({
+  synth: speechSynthesis,
+  makeUtterance: (text) => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ko-KR'; if (S.voice) u.voice = S.voice; return u; },
+  now, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h),
+  log: (k, o) => clog(k, o),
+  onStart: (item) => { S.sayStartAt = now(); S.sayStartSeq = item.seq; showCaption(item.text, item.err); },
+  onFail: (item) => showCaption(item.text, true),
+}) : null;
 function say(text, opts = {}) {
   if (!text) return;
   $('live').textContent = text;
-  if (!opts.force && text === S.lastSpoken) return;
-  S.lastSpoken = text;
-  if (!('speechSynthesis' in window)) { showCaption(text, opts.err); return; }
-  const queue = opts.queue || (S.priorityActive && !opts.priority && !opts.force);
-  if (!queue) speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'ko-KR';
-  if (S.voice) u.voice = S.voice;
-  const src = opts.src || 'local';
-  u.onstart = () => { S.sayStartAt = now(); showCaption(text, opts.err); clog('say_start', { text, src, seq: opts.seq ?? null }); };
-  u.onend = () => { if (opts.priority) S.priorityActive = false; clog('say_end', { text, src, seq: opts.seq ?? null }); };
-  u.onerror = (ev) => { if (opts.priority) S.priorityActive = false; clog('say_error', { text, src, error: ev && ev.error }); };
-  if (opts.priority) S.priorityActive = true;
-  clog('say_queued', { text, src, queue: !!queue, seq: opts.seq ?? null });
-  speechSynthesis.speak(u);
-  if (!queue) showCaption(text, opts.err);
+  if (!SQ) { showCaption(text, opts.err); return; }
+  if (SQ.say(text, opts) && !opts.queue && !SQ.priorityActive()) showCaption(text, opts.err);
 }
 function unlockAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -137,32 +132,60 @@ function onMotion(e) {
   if (S.running && $('sensors').checked) sensorSay(outs);
 }
 function sensorSay(outs) {
-  for (const t of outs) { CUE.sensor(); say(t, { force: true, queue: S.priorityActive, src: 'sensor' }); }
+  for (const t of outs) { CUE.sensor(); say(t, { force: true, queue: SQ ? SQ.priorityActive() : false, src: 'sensor' }); }
 }
-function requestOrientation() {
-  if (S.oriAsked || !('DeviceOrientationEvent' in window)) return Promise.resolve(S.oriOk);
-  S.oriAsked = true;
+// 센서 허락 (2026-11-23 사용자 지시 6). 시험 1~3에서 허락 창이 뜨지 않은 원인: 길게 누르기의 pointerdown(손가락이 닿는
+// 순간)에서 requestPermission()을 불렀는데, iOS WebKit(아이폰 Chrome 포함)은 손을 뗄 때(touchend·click)만 사용자 동작으로
+// 인정해 창 없이 실패 → 실패를 조용히 false로 두고 oriAsked=true라 다시 묻지 않았음. https였고 주소가 매번 새로 바뀌어
+// '이미 거부' 상태도 아니었다. → 손을 뗄 때(touchend·click) 묻고, 실패(오류)면 다음 터치에서 다시 묻는다.
+// 상태: granted | denied | error:이름 | unsupported | pending
+function sensorPerm(kind) {
+  const Ev = kind === 'ori' ? window.DeviceOrientationEvent : window.DeviceMotionEvent;
+  const key = kind === 'ori' ? 'oriState' : 'motionState';
+  if (S[key] === 'granted' || S[key] === 'denied' || S[key] === 'pending') return Promise.resolve(S[key]);
+  if (!Ev) { S[key] = 'unsupported'; renderPerm(); return Promise.resolve(S[key]); }
   const attach = () => {
-    window.addEventListener('deviceorientation', onOrientation);
-    window.addEventListener('deviceorientationabsolute', onOrientation);
-    return (S.oriOk = true);
+    if (kind === 'ori') {
+      window.addEventListener('deviceorientation', onOrientation);
+      window.addEventListener('deviceorientationabsolute', onOrientation);
+    } else window.addEventListener('devicemotion', onMotion);
+    return 'granted';
   };
-  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-    return DeviceOrientationEvent.requestPermission()
-      .then((st) => (st === 'granted' ? attach() : (S.oriOk = false))).catch(() => (S.oriOk = false));
-  }
-  return Promise.resolve(attach());
+  if (typeof Ev.requestPermission !== 'function') { S[key] = attach(); renderPerm(); return Promise.resolve(S[key]); }
+  S[key] = 'pending';
+  return Ev.requestPermission()
+    .then((st) => (st === 'granted' ? attach() : 'denied'))
+    .catch((e) => 'error:' + ((e && e.name) || 'unknown'))
+    .then((st) => {
+      S[key] = st; S.permLog.push({ kind, st, t: Date.now() / 1000 });
+      if (kind === 'ori') S.oriOk = st === 'granted'; else S.motionOk = st === 'granted';
+      renderPerm();
+      if (st === 'denied' && !S.notified['perm_denied']) {
+        S.notified['perm_denied'] = true;
+        say('동작 및 방향 접근이 꺼져 있습니다. 설정에서 동작 및 방향 접근을 켜 주세요.', { force: true });
+      }
+      return st;
+    });
 }
-function requestMotion() {
-  if (S.motionAsked || !('DeviceMotionEvent' in window)) return Promise.resolve(S.motionOk);
-  S.motionAsked = true;
-  const attach = () => { window.addEventListener('devicemotion', onMotion); return (S.motionOk = true); };
-  if (typeof DeviceMotionEvent.requestPermission === 'function') {
-    return DeviceMotionEvent.requestPermission()
-      .then((st) => (st === 'granted' ? attach() : (S.motionOk = false))).catch(() => (S.motionOk = false));
-  }
-  return Promise.resolve(attach());
+function requestOrientation() { return sensorPerm('ori').then((st) => (st === 'granted' ? true : st === 'pending' ? null : false)); }
+function requestMotion() { return sensorPerm('motion').then((st) => (st === 'granted' ? true : st === 'pending' ? null : false)); }
+const PERM_KO = { granted: '허용됨', denied: '거부됨 — 설정에서 동작 및 방향 접근을 켜 주세요', pending: '묻는 중',
+  unsupported: '지원 안 됨', undefined: '아직 묻지 않음 (화면을 누르면 묻습니다)' };
+function renderPerm() {
+  const el = $('perm-status');
+  if (!el) return;
+  const word = (st) => PERM_KO[st] || ('다시 물어야 함 (' + st + ') — 화면을 한 번 눌러 주세요');
+  el.textContent = `방향 센서: ${word(S.oriState)} · 움직임 센서: ${word(S.motionState)}`;
+  el.classList.toggle('ok', S.oriState === 'granted' && S.motionState === 'granted');
+  el.classList.toggle('bad', S.oriState === 'denied' || S.motionState === 'denied');
 }
+function sensorGesture() {   // 손을 뗄 때 (iOS가 사용자 동작으로 인정하는 때)
+  if (S.oriState !== 'granted' && S.oriState !== 'denied') sensorPerm('ori');
+  if (S.motionState !== 'granted' && S.motionState !== 'denied') sensorPerm('motion');
+}
+document.addEventListener('touchend', sensorGesture, { passive: true });
+document.addEventListener('click', sensorGesture);
+
 function fileMode() { return S.files.length > 0; }
 function cameraConstraints() {
   const hi = $('quality').value === '1080';
@@ -224,8 +247,9 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 function prepareInGesture() {
   unlockAudio();
-  const ori = requestOrientation();
-  const mot = requestMotion();
+  // 센서 허락은 여기(pointerdown)에서 묻지 않는다: iOS는 손을 뗄 때만 허락 창을 띄움 → sensorGesture(touchend·click)
+  const ori = Promise.resolve(S.oriState === 'granted' ? true : S.oriState === 'denied' ? false : null);
+  const mot = Promise.resolve(S.motionState === 'granted' ? true : S.motionState === 'denied' ? false : null);
   const cam = openCamera();
   const wake = keepAwake();
   S.prep = Promise.all([cam, ori, mot, wake]).then(([camOk, oriOk, motOk, wakeOk]) => ({ camOk, oriOk, motOk, wakeOk }));
@@ -305,7 +329,7 @@ function onHoldDown(e) {
   if (e.button !== undefined && e.button !== 0) return;
   e.preventDefault();
   S.holding = true; S.holdStart = now(); S.listening = true;
-  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  if (SQ) SQ.stop();
   prepareInGesture();   // 이 터치 안에서 권한 요청
   CUE.recStart();
   startCapture();       // 음성 인식 시작도 터치 안에서
@@ -349,7 +373,8 @@ async function finishHold() {
 function sessionMeta() {
   return { camera: { label: S.cameraLabel, ultrawide: $('ultrawide').checked, quality: $('quality').value, probe: S.camInfo,
     ultra_by: $('ultrawide').checked ? (S.ultrawideId ? 'device' : S.zoomMin ? `zoom ${S.zoomMin}` : 'none') : null },
-    device: { ua: navigator.userAgent, orientation: S.oriOk, motion: S.motionOk, voice: voiceMode() },
+    device: { ua: navigator.userAgent, orientation: S.oriOk, motion: S.motionOk, ori_state: S.oriState, motion_state: S.motionState,
+      perm_log: S.permLog, voice: voiceMode() },
     mode: fileMode() ? 'file' : 'camera', files: S.files.map((f) => f.name), quick_confirm: $('quickconf').checked };
 }
 async function submitText(text, source, ms) {
@@ -541,13 +566,16 @@ async function sharpShot(notBefore) {   // notBefore 뒤에 선명도 기준 이
   }
   return null;
 }
-async function quickConfirm(tReply) {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
+async function quickConfirm(tReply, seq) {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
   if (S.quickBusy || !$('quickconf').checked) return;
   S.quickBusy = true;
   try {
-    // "잠시 멈춰 주세요" 음성이 시작된 뒤에 찍는다 (최대 quickSpeechWaitMs). 2026-11-23 시험 1: 음성보다 0.3초 먼저 찍었음
-    while (S.running && !(S.sayStartAt >= tReply) && now() - tReply < S.quickSpeechWaitMs) await sleep(30);
-    clog('quick_start', { waited_ms: Math.round(now() - tReply), speech: S.sayStartAt >= tReply });
+    // "잠시 멈춰 주세요"(그 응답의 문장)가 실제로 소리 났을 때만 찍는다 (최대 quickSpeechWaitMs 기다림).
+    // 2026-11-23 시험 3: 문장이 소리 나지 않았는데 1초 뒤 찍어 사용자가 멈추지 않은 사진이 감
+    const spoke = () => S.sayStartAt >= tReply && S.sayStartSeq === seq;
+    while (S.running && !spoke() && now() - tReply < S.quickSpeechWaitMs) await sleep(30);
+    clog('quick_start', { waited_ms: Math.round(now() - tReply), speech: spoke(), seq });
+    if (!spoke()) { clog('quick_skip', { reason: 'speech_not_started', seq }); return; }
     const a = await sharpShot(now());
     const b = a ? await sharpShot(now() + S.quickGapMs) : null;
     if (a && b && S.running) { sendFrame(a, 'confirm'); sendFrame(b, 'confirm'); }
@@ -603,13 +631,14 @@ function onFrameReply(r) {
         if (r.arrived) CUE.arrived();
         else if (r.action !== S.lastAction && /뒤로|돌아가/.test(text)) CUE.left();
         else if (r.action !== S.lastAction) CUE.stage();
-        say(text, { queue: !newer, src: 'server', seq: r.seq });   // 늦게 온(먼저 보낸) 응답은 끊지 않고 뒤에
+        // 늦게 온(먼저 보낸) 응답은 끊지 않고 뒤에. 도착 문장은 끊기지 않는 우선 문장, 빠른 확인 문장은 같아도 읽음
+        say(text, { queue: !newer && !r.arrived, src: 'server', seq: r.seq, priority: !!r.arrived, force: !!(r.arrived || r.confirm) });
         S.lastSpeech = text;
         if (S.guide) S.guide.onGuidance(r.say, r.action, now() / 1000);
       }
       if (newer) S.lastAction = r.action;
       if (r.arrived && newer) stopAfterArrival();
-      else if (r.confirm && newer && S.running) quickConfirm(now());
+      else if (r.confirm && newer && S.running) quickConfirm(now(), r.seq);
       break;
     }
     case 'limit': case 'stopped':
@@ -734,6 +763,7 @@ for (const id of ['quality', 'slowwarn', 'sensors', 'quickconf']) {
 }
 $('quality').addEventListener('change', () => { if (S.stream) openCamera(true); });
 
+renderPerm();
 (async function init() {
   const code = load('nav_code');
   if (code && load('nav_setup_done') === '1') {

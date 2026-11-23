@@ -75,6 +75,9 @@ class LogRunner:
 def load(d):
     lines = [json.loads(x) for x in (Path(d) / "log.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
     start = next(x for x in lines if x.get("event") == "start")
+    global USER_EVENTS
+    # 사용자가 말한 층·목적지 변경·"내렸어요" (2026-11-23: 재생에 넣지 않아 층 질문이 되풀이되던 것)
+    USER_EVENTS = [x for x in lines if x.get("event") in ("here_floor", "destination", "exited")]
     steps = [x for x in lines if "event" not in x]
     stale = [x for x in lines if x.get("event") == "stale"]
     # 2026-11-23 기록 보강 뒤: 버린 사진(stale·dropped)도 인식 결과·시각이 남음 → 다시 넣을 수 있음
@@ -110,6 +113,9 @@ def sharpness(path):
     g = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
     lap = g[1:-1, :-2] + g[1:-1, 2:] + g[:-2, 1:-1] + g[2:, 1:-1] - 4 * g[1:-1, 1:-1]
     return float(lap.var())
+
+
+USER_EVENTS = []
 
 
 def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outside=True, reperceive=None, limit=30.0,
@@ -162,9 +168,23 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
     for s in stale:  # 원래 버려진 프레임: 인식 결과가 기록에 없음 → 다시 넣지 않음
         pass
     lock_free, last_applied, out, quick_n = 0.0, 0, [], 0
+    pending_ev = sorted(USER_EVENTS, key=lambda e: e.get("t") or 0)
     by_t = sorted(steps, key=lambda r: r["t"])
     while heap:
         done, sq, kind, r = heapq.heappop(heap)
+        while pending_ev and (pending_ev[0].get("t") or 0) < r["t"]:   # 기록 시각(그때 마지막 사진 시각) 순서대로
+            ev = pending_ev.pop(0)
+            if ev["event"] == "here_floor" and ev.get("floor"):
+                say_ev = nav.set_floor(ev["floor"])
+            elif ev["event"] == "destination" and ev.get("target"):
+                say_ev = nav.set_target(ev["target"])
+            elif ev["event"] == "exited":
+                say_ev = nav.exit_elevator("버튼") or []
+            else:
+                say_ev = []
+            out.append({"kind": "user", "event": ev["event"], "t": ev.get("t"), "resp": round(max(lock_free, ev.get("t") or 0), 2),
+                        "say": say_ev, "action": nav.st["act"], "floor": nav.st["floor"], "seq": -1, "arrived": nav.st["arrived"], "logged_resp": None, "frame": "", "recheck": [],
+                        "confirm_now": False})
         if sq <= last_applied and kind != "quick":  # 빠른 확인 사진은 버리지 않음 (서버와 같게, 2026-11-23)
             out.append({"kind": kind, "seq": sq, "stale": True, "t": r["t"]})
             continue

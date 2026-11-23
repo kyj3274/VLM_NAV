@@ -37,7 +37,7 @@ from pydantic import BaseModel  # noqa: E402
 
 import claude_perceiver as cp  # noqa: E402
 from claude_client import ROOT, CreditLimit, GatewayClient, Ledger  # noqa: E402
-from dest_parse import parse_destination, parse_here_floor  # noqa: E402
+from dest_parse import announce, parse_destination, parse_here_floor  # noqa: E402
 from navigator import QUICK_SHOTS, Navigator, Runner  # noqa: E402
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -246,7 +246,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 "model": getattr(client, "model", ""), "fake": cfg.fake, **info, **ws.info})
         here = f" 지금 {dest['here']}층에서 출발합니다." if dest.get("here") else ""
         return {"status": "ok", "session_id": sid, "target": dest["target"], "name": dest["name"],
-                "say": [f"{dest['name']}로 안내하겠습니다.{here}"], "floor": dest.get("here")}
+                "say": [announce(dest) + here], "floor": dest.get("here"), "readback": dest.get("readback", "")}
 
     def change(ws: WebSession, dest: dict, info: dict) -> dict:
         """안내 중 목적지 변경. 같이 말한 지금 층("4층에서 105호")이 있으면 그 층도 반영한다.
@@ -261,7 +261,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         ws.log({"event": "destination", "wall": wall(), "t": ws.nav.clock, "target": dest["target"],
                 "here": dest.get("here"), "next": nxt, "action": action, **info})
         return {"status": "ok", "session_id": ws.id, "target": dest["target"], "name": dest["name"],
-                "say": [f"{dest['name']}로 안내하겠습니다."] + nxt, "floor": floor, "action": action}
+                "say": [announce(dest)] + nxt, "floor": floor, "action": action, "readback": dest.get("readback", "")}
 
     def here_floor(ws: WebSession, floor: str, info: dict) -> dict:
         """안내 중 "여기 4층이야": 지금 층으로 바로 반영 (2026-11-23 사용자 지시 2). 문패와 같은 근거."""

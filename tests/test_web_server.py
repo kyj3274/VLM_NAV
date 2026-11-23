@@ -16,6 +16,7 @@ import navigator as nv  # noqa: E402
 import web_server as wsrv  # noqa: E402
 from claude_client import FakeClient, Ledger  # noqa: E402
 from dest_parse import parse_room  # noqa: E402
+import dest_parse  # noqa: E402
 from fake_scene import fake_client  # noqa: E402
 from stt import FakeTranscriber  # noqa: E402
 
@@ -188,7 +189,7 @@ def test_exited_before_any_frame_is_new_segment(tmp_path):
     c, _ = app_with(tmp_path)
     sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
-    assert r["segment"] == 1 and r["say"] == ["엘리베이터에서 내렸습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."]
+    assert r["segment"] == 1 and r["say"] == ["엘리베이터에서 내렸습니다. 4층에 내렸습니다. 410호를 찾겠습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."]
     # 2026-11-23: 버튼 응답에서 말했으므로 첫 사진에서 되풀이하지 않음 (전에는 두 번 말함)
     f = frame(c, sid, 0.0)
     assert not any(x.startswith("엘리베이터에서 내렸습니다") for x in f["say"]) and f["action"] == "멈추고 둘러보기"
@@ -201,8 +202,10 @@ def test_exited_and_destination_change(tmp_path):
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
     assert r["segment"] == 1 and "내렸습니다" in r["say"][0]
     r = c.post(f"/api/session/{sid}/destination", headers=H, json={"destination": "삼백십칠호"}).json()
-    # 리뷰 4: 목적지를 바꾸면 다음 할 일도 말함 (내린 뒤 층 모름 → 층 확인)
-    assert r["status"] == "ok" and r["target"] == "317" and r["say"] == ["317호로 안내하겠습니다.", nv.CHECK_SAY]
+    # 리뷰 4: 목적지를 바꾸면 다음 할 일도 말함. 2026-11-23: 내린 층은 4층으로 봄 → 317호는 3층이라 엘리베이터로.
+    # "삼백십칠호"(한글 숫자)는 되읽기
+    assert r["status"] == "ok" and r["target"] == "317"
+    assert r["say"] == ["삼, 일, 칠. 317호로 안내하겠습니다.", "지금 4층입니다. 317호는 3층에 있습니다. 엘리베이터로 돌아가 3층을 누르세요."]
     assert c.get(f"/api/session/{sid}", headers=H).json()["target"] == "317"
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "end"}).json()
     assert frame(c, sid, 3.0)["status"] == "stopped"
@@ -310,7 +313,9 @@ def test_review2_exited_drops_photos_from_before(tmp_path):
     new = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
                  data={"t": "2.0", "seg": "1"}).json()
     assert new["status"] == "ok" and new["seg"] == 1
-    assert new["say"][0] == "4층이 맞습니다." and new["action"] == "멈추고 둘러보기"  # 새 구간의 첫 걸음은 이 사진
+    # 새 구간의 첫 걸음은 이 사진. 내린 층(4층으로 봄)을 4F 표시가 확인 (2026-11-23 사용자 지시 5)
+    assert new["say"] == [] and new["action"] == "멈추고 둘러보기"
+    assert c.app.state.sessions[sid].nav.st["floor_src"] == "층 표시 '4F'"
     m = c.get(f"/api/session/{sid}", headers=H).json()["detail"]
     assert m["counts"]["old_segment"] == 2 and m["counts"]["applied"] == 1
     ws = c.app.state.sessions[sid]
@@ -362,7 +367,7 @@ def test_auto_exit_then_button_is_same_exit(tmp_path):
     rs = [c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
                  data={"t": str(1.5 * i), "heading": "90", "steps": str([3, 3, 3, 3, 5, 7][i])}).json() for i in range(6)]
     assert not rs[4]["exited"] and rs[5]["exited"] and rs[5]["action"] == "멈추고 둘러보기"
-    assert rs[5]["say"][0] == "엘리베이터에서 내렸습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
+    assert rs[5]["say"][0] == "엘리베이터에서 내렸습니다. 4층에 내렸습니다. 410호를 찾겠습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
     assert r["segment"] == 1 and r["say"] == ["엘리베이터에서 내린 것을 이미 확인했습니다."]
     ws = c.app.state.sessions[sid]
@@ -428,3 +433,24 @@ def test_quick_photo_not_dropped_when_other_finishes_first(tmp_path):
     ws = c.app.state.sessions[sid]
     assert ws.counts["stale"] == 0 and sum(1 for x in ws.nav.records if x.get("quick")) == 2
     assert ws.nav.st["quick"] is None  # 2장을 모두 세어 빠른 확인 한 번이 끝남
+
+
+# ---------------------------------------------------------------- 2026-11-23 목적지 받아쓰기 (시험 3: 412 → "410 이호")
+@pytest.mark.parametrize("heard,room,how", [
+    ("410 이호", "412", "merged"), ("400 십이호", "412", "merged"), ("4 12", "412", "spaced"), ("사백 십이", "412", "korean"),
+    ("사 일 이", "412", "korean"), ("412%", "412", "clean"), ("사백십이호", "412", "korean"), ("412 호로 가 줘", "412", "clean"),
+    ("410 포", "410", "noisy"), ("412호로 가고 싶어", "412", "clean"), ("405", "405", "clean"),
+])
+def test_destination_variants_and_how(heard, room, how):
+    d = dest_parse.parse_destination(heard)
+    assert d["target"] == room and d["how"] == how
+    want = f"{room}호로 안내하겠습니다." if how == "clean" else f"{dest_parse.read_digits(room)}. {room}호로 안내하겠습니다."
+    assert dest_parse.announce(d) == want
+
+
+def test_ambiguous_destination_is_read_back_digit_by_digit(tmp_path):
+    c, _ = app_with(tmp_path)
+    r = c.post("/api/session", headers=H, json={"destination": "410 이호"}).json()
+    assert r["target"] == "412" and r["say"] == ["사, 일, 이. 412호로 안내하겠습니다."] and r["readback"] == "사, 일, 이"
+    r = c.post("/api/session", headers=H, json={"destination": "412호"}).json()
+    assert r["say"] == ["412호로 안내하겠습니다."] and r["readback"] == ""

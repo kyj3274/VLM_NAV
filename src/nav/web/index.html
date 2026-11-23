@@ -53,6 +53,7 @@
     <p class="big">화면을 길게 누른 채<br>목적지를 말하세요</p>
     <p class="muted" id="mode-line"></p>
   </div>
+  <p id="perm-status" class="perm" role="status" aria-live="polite">센서: 아직 묻지 않음 (화면을 누르면 묻습니다)</p>
   <form id="dest-form" class="nohold dest-form">
     <label for="dest" class="sr-only">목적지 글자로 입력</label>
     <input id="dest" type="text" placeholder="또는 글자로: 410호" autocomplete="off" enterkeyhint="go">
@@ -81,7 +82,8 @@
 
 <div id="rec-overlay" class="rec" hidden aria-hidden="true">듣는 중… 손을 떼면 보냅니다</div>
 
-<script src="sensors.js"></script>
-<script src="app.js?v=20261119b"></script>
+<script src="sensors.js?v=20261124"></script>
+<script src="speech.js?v=20261124"></script>
+<script src="app.js?v=20261124"></script>
 </body>
 </html>
