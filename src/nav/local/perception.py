@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-BASE = Path(__file__).resolve().parents[1]  # nav/의 위 폴더 (서버의 models/가 여기 있음)
+BASE = next((d for d in Path(__file__).resolve().parents if (d / "models").is_dir()), Path(__file__).resolve().parents[2])  # models/가 있는 위 폴더 (서버 src/kyj, Mac 저장소 맨 위)
 # YOLOE 가중치 폴더: 서버는 <위 폴더>/models, Mac은 저장소의 local_models (둘 다 없으면 <위 폴더>/models에 내려받음)
 _LOCAL = [d / "local_models" for d in Path(__file__).resolve().parents if (d / "local_models").is_dir()][:1]
 MODEL_DIR = next((d for d in [BASE / "models"] + _LOCAL if (d / "yoloe-11l-seg.pt").is_file()), BASE / "models")

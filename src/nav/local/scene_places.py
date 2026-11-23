@@ -21,7 +21,7 @@ import torchvision
 from PIL import Image
 
 ROOT = next((d for d in Path(__file__).resolve().parents if (d / "data" / "video").is_dir()), Path(__file__).resolve().parents[2])  # 저장소 맨 위
-MODEL = next((d for d in (Path(__file__).resolve().parents[1] / "models" / "places365", ROOT / "local_models" / "places365")
+MODEL = next((d for d in (next((d for d in Path(__file__).resolve().parents if (d / "models").is_dir()), Path(__file__).resolve().parents[2]) / "models" / "places365", ROOT / "local_models" / "places365")
               if (d / "resnet18_places365.pth.tar").is_file()), None)
 VIDEOS = [("졸프_영상3", "1_start_졸프_영상3", "1층"), ("졸프_영상1", "2a_after_elevator_졸프_영상1", "4층"),
           ("졸프_영상2", "2b_after_elevator_졸프_영상2", "3층")]
