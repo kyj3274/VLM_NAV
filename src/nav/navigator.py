@@ -130,7 +130,8 @@ class Navigator:
                    "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기", "maybe_said": False,
                    "floor_move": None, "quick_asked": False, "quick_n": 0,
                    "el_cand": None, "el_last": None, "el_miss": 0, "el_passed": False, "stair": new_stair(),
-                   "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None}
+                   "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None,
+                   "door_out": False}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
@@ -324,7 +325,8 @@ class Navigator:
                 kind = "유리문" if obs["door_ahead"] == "glass" else "문"
                 say.append(self.start_head() + (f"지금 {st['floor']}층입니다. " if st["floor"] else "")
                            + f"앞에 {kind}이 있습니다. 문을 지나 들어가세요.")
-                st.update(door_phase=True, act="문 통과")
+                # 밖에서 건물 출입문을 보고 시작했는가 (첫 사진의 장소가 '건물 출입문'): 지나가면 1층의 약한 근거 (2026-11-23 (2))
+                st.update(door_phase=True, act="문 통과", door_out=obs["place"] == "entrance")
             elif st["floor"] is not None:  # 출발 층을 말로 받음: 위치 파악 없이 바로 다음 행동
                 say.extend(self.floor_next(head=self.start_head() + f"지금 {st['floor']}층입니다. "))
             else:
@@ -343,7 +345,15 @@ class Navigator:
             st["door_gone"] = st["door_gone"] + 1 if obs["door_ahead"] == "none" else 0
             if st["door_gone"] >= DOOR_GONE:
                 st["door_phase"] = False
-                if st["floor"] is None:  # 층을 모름: 엘리베이터를 찾으라고 하지 않는다 (2026-11-23, 전에는 1층 가정)
+                if st["floor"] is None and st.get("door_out"):
+                    # 밖에서 건물 출입문을 지나 들어옴 = 지상층(1층)의 근거 (2026-11-23 사용자 지시 (2): 판단 지점 1~4가 실제로
+                    # 건물 입구로 들어오는 1층). 문패·층 표시·말로 받은 층보다 약하게: 임시 층(floor_temp)으로 두어
+                    # 다른 층 확정 문패·층 표시 한 번이면 그쪽을 따르고, 말로 받은 층은 바로 덮는다.
+                    # 처음부터 실내에서 시작했으면(첫 사진이 출입문 앞이 아니면) 1층으로 가정하지 않는다.
+                    st.update(floor="1", floor_temp=True, floor_src="출입문")
+                    self.mem.event(clock, "건물 출입문을 지나 들어옴: 임시 1층 (문패·층 표시가 다르면 그쪽을 따름)")
+                    say.extend(self.floor_next(head="문을 지났습니다. 건물 입구로 들어왔으니 1층으로 보고 안내하겠습니다. "))
+                elif st["floor"] is None:  # 층을 모름: 엘리베이터를 찾으라고 하지 않는다 (2026-11-23, 전에는 1층 가정)
                     self.check_say(say, head="문을 지났습니다. ")
                 else:
                     say.extend(self.floor_next(head="문을 지났습니다. "))

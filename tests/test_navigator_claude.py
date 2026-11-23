@@ -390,8 +390,9 @@ def says(recs):
 
 
 def test_no_floor_assumption_no_elevator_guidance():
-    """층을 모르면 1층으로 가정하지 않는다: 출입문·엘리베이터가 보여도 엘리베이터 안내 없이 층 확인, 15초 뒤 층 질문(20초에 한 번)."""
-    script = [O(door="glass", place="entrance")] * 2 + [O()] * 3 + [O(elev=EL, place="elev_hall")] * 40
+    """실내에서 시작하면 1층으로 가정하지 않는다: 복도의 유리문을 지나고 엘리베이터가 보여도 엘리베이터 안내 없이 층 확인,
+    15초 뒤 층 질문(20초에 한 번). (첫 사진이 '건물 출입문'이 아니라 복도)"""
+    script = [O(door="glass", place="corridor")] * 2 + [O()] * 3 + [O(elev=EL, place="elev_hall")] * 40
     nav = nv.Navigator(ScriptRunner(script), "410")
     nav.new_segment("1")
     recs = run(nav, 45)
@@ -562,3 +563,42 @@ def test_review4_target_change_with_known_floor():
     out = nav.set_target("105")
     assert nav.st["wrong_floor"] and nav.st["act"] == "엘리베이터로 돌아가기"
     assert out == ["지금 4층입니다. 105호는 1층에 있습니다. 엘리베이터로 돌아가 1층을 누르세요."]
+
+
+# ---------------------------------------------------------------- 2026-11-23 (2) 출입문 근거 되살림
+def test_entrance_from_outside_is_weak_first_floor():
+    """밖에서 건물 출입문을 지나 들어오면 1층(약한 근거): 엘리베이터 안내가 나온다 (판단 지점 1~4와 같은 장면)."""
+    far = {**EL, "side": "R", "m": 5.0}
+    script = [O(door="glass", place="entrance")] * 2 + [O()] * 3 + [O(elev=far)] * 2 + [O(elev=EL, place="elev_hall")] * 2
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    nav.new_segment("1")
+    recs = run(nav, 9)
+    assert recs[0]["action"] == "문 통과" and recs[0]["state"]["floor"] is None
+    assert recs[3]["say"] == ["문을 지났습니다. 건물 입구로 들어왔으니 1층으로 보고 안내하겠습니다. 410호는 4층에 있습니다. "
+                              "엘리베이터를 찾아 4층으로 가겠습니다. 앞으로 천천히 직진해 주세요."]
+    assert recs[3]["state"]["floor"] == "1" and recs[3]["state"]["floor_temp"] and recs[3]["state"]["floor_src"] == "출입문"
+    assert recs[8]["action"] == "엘리베이터 타기" and "엘리베이터를 타고 4층을 누르세요" in says(recs)
+
+
+def test_entrance_floor_yields_to_plate_sign_and_speech():
+    """출입문 근거는 문패·층 표시·말로 받은 층보다 약하다: 다른 층 확정 문패 한 번, 층 표시 한 번, 말한 층이면 그쪽."""
+    door = [O(door="glass", place="entrance")] * 2 + [O()] * 2
+    for extra, want in (([O([("412", "C", 2.5, "door")])], "4"), ([O(floor_sign="3F")], "3")):
+        nav = nv.Navigator(ScriptRunner(door + extra), "410")
+        nav.new_segment("1")
+        recs = run(nav, 5)
+        assert recs[3]["state"]["floor"] == "1" and recs[4]["state"]["floor"] == want
+    nav = nv.Navigator(ScriptRunner(door), "410")
+    nav.new_segment("1")
+    run(nav, 4)
+    nav.set_floor("4")
+    assert nav.st["floor"] == "4" and not nav.st["floor_temp"] and nav.st["floor_src"] == "말"
+
+
+def test_door_mid_session_is_not_entrance_evidence():
+    """처음엔 실내(로비)였다가 나중에 유리문이 보여도 1층 근거로 쓰지 않는다 (4층 세션의 안쪽 유리문)."""
+    script = [O(place="lobby")] * 6 + [O(door="glass", place="entrance")] * 2 + [O()] * 3 + [O(elev=EL, place="elev_hall")] * 4
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    nav.new_segment("1")
+    recs = run(nav, len(script))
+    assert all(r["state"]["floor"] is None for r in recs) and "엘리베이터를 타고" not in says(recs)
