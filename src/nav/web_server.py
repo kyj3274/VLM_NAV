@@ -236,10 +236,12 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 "say": [f"{dest['name']}로 안내하겠습니다.{here}"], "floor": dest.get("here")}
 
     def change(ws: WebSession, dest: dict, info: dict) -> dict:
-        """안내 중 목적지 변경. 같이 말한 지금 층("4층에서 105호")이 있으면 그 층도 반영한다."""
+        """안내 중 목적지 변경. 같이 말한 지금 층("4층에서 105호")이 있으면 그 층도 반영한다.
+        목적지 변경 뒤 다음 할 일(층 모르면 층 확인, 알면 엘리베이터·복도)을 바로 말한다 (PR #1 리뷰 4)."""
         with ws.alock:
-            ws.nav.set_target(dest["target"])
-            nxt = ws.nav.set_floor(dest["here"]) if dest.get("here") else []
+            nxt = ws.nav.set_target(dest["target"])
+            if dest.get("here"):
+                nxt = ws.nav.set_floor(dest["here"])
             ws.target = dest["target"]
             ws.stopped, ws.stop_reason = False, ""
             floor, action = ws.nav.st["floor"], ws.nav.st["act"]

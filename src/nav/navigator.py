@@ -149,7 +149,8 @@ class Navigator:
         return head + (f"{t}호는 {tf}층입니다. " if tf else "")
 
     def set_target(self, target):
-        """안내 중 목적지 변경 (웹). 목적지와 도착·진행 방향 상태만 새로 하고, 층·확정 문패·엘리베이터 기억은 둔다."""
+        """안내 중 목적지 변경 (웹). 목적지와 도착·진행 방향 상태만 새로 하고, 층·확정 문패·엘리베이터 기억은 둔다.
+        반환: 바뀐 목적지로 다음에 할 일 문장들."""
         st = self.st
         self.target, self.tf = target, target[0] if ROOM.match(target) else None
         self.mem.target = target
@@ -165,9 +166,11 @@ class Navigator:
                 p.update(ok=False, ok_t=None, wait_calls=True)
                 self.mem.event(self.clock, f"{target}호 확정 풀림 (새 목적지: 서로 다른 호출 {nav_memory.TARGET_CALLS}번 필요, 지금 {calls}번)")
         self.mem.event(self.clock, f"목적지 변경: {target}")
-        if st["floor"] is not None:
-            st["wrong_floor"] = bool(self.tf) and st["floor"] != self.tf
-            st["act"] = ("엘리베이터로 돌아가기" if self.si > 0 else "직진") if st["wrong_floor"] else "직진"
+        # PR #1 리뷰 4: 층을 모를 때도 행동을 다시 계산한다 (전에는 층을 알 때만 → '엘리베이터 타기'가 남았음)
+        if st["floor"] is None:
+            st["wrong_floor"], st["act"] = False, "멈추고 둘러보기"
+            return [CHECK_SAY]
+        return self.floor_next(head=f"지금 {st['floor']}층입니다. ")
 
     def floor_next(self, head=""):
         """층을 알 때 다음 행동 문장 (목적지 층이면 복도 직진, 아니면 엘리베이터). act·wrong_floor도 정한다."""

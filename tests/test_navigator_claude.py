@@ -540,3 +540,25 @@ def test_review3_target_change_second_call_confirms():
     assert "315" not in nav.mem.confirmed()
     r = run(nav, 1)[0]
     assert r["rooms"] == ["315"] and nav.mem.get("315")["calls"] == 2  # 서로 다른 호출 2번 → 확정
+
+
+def test_review4_target_change_recomputes_action_when_floor_unknown():
+    """층을 모를 때 410 → 105: 행동을 다시 계산 → '엘리베이터를 타고 1층을 누르세요'가 나오지 않는다."""
+    nav = nv.Navigator(ScriptRunner([O()] * 30), "410")
+    nav.new_segment("1")
+    run(nav, 6)
+    nav.st["act"] = "엘리베이터 타기"  # 전의 1층 가정 상태(리뷰 재현): 층 모름 + 엘리베이터 타기
+    out = nav.set_target("105")
+    assert out == [C] and nav.st["act"] == "멈추고 둘러보기"
+    recs = run(nav, 24)
+    assert "엘리베이터를 타고" not in says(recs) and "1층을 누르세요" not in says(recs)
+    assert C in says(recs)
+
+
+def test_review4_target_change_with_known_floor():
+    nav = nv.Navigator(ScriptRunner([O([("412", "C", 2.5, "door")])] + [O()] * 3), "410")
+    exited(nav)
+    run(nav, 1)
+    out = nav.set_target("105")
+    assert nav.st["wrong_floor"] and nav.st["act"] == "엘리베이터로 돌아가기"
+    assert out == ["지금 4층입니다. 105호는 1층에 있습니다. 엘리베이터로 돌아가 1층을 누르세요."]

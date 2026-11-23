@@ -12,6 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "nav"))
 
+import navigator as nv  # noqa: E402
 import web_server as wsrv  # noqa: E402
 from claude_client import FakeClient, Ledger  # noqa: E402
 from dest_parse import parse_room  # noqa: E402
@@ -196,7 +197,8 @@ def test_exited_and_destination_change(tmp_path):
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
     assert r["segment"] == 1 and "내렸습니다" in r["say"][0]
     r = c.post(f"/api/session/{sid}/destination", headers=H, json={"destination": "삼백십칠호"}).json()
-    assert r["status"] == "ok" and r["target"] == "317" and r["say"] == ["317호로 안내하겠습니다."]
+    # 리뷰 4: 목적지를 바꾸면 다음 할 일도 말함 (내린 뒤 층 모름 → 층 확인)
+    assert r["status"] == "ok" and r["target"] == "317" and r["say"] == ["317호로 안내하겠습니다.", nv.CHECK_SAY]
     assert c.get(f"/api/session/{sid}", headers=H).json()["target"] == "317"
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "end"}).json()
     assert frame(c, sid, 3.0)["status"] == "stopped"
