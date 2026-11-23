@@ -9,7 +9,16 @@
 목적지 번호(또는 목적지 이름)만은 점수와 함께 서로 다른 호출(다른 걸음의 사진) 2번에서 읽혀야 확정한다
 (2026-11-18 사용자 지시: 확대 재확인은 같은 사진이라 두 번째 호출로 치지 않음. 그 전에는 '확인 중'까지만 말함).
 사건 기록은 글 한 줄씩이라 나중에 텍스트 모델에 그대로 넣을 수 있다 (text()).
+
+방향·뒤돌기는 공통 판단 core/nav_graph.py (로컬 버전과 같은 코드). 문패를 읽을 때마다 그래프에도 넣는다:
+  벽 = 깊이로 정한 벽(있으면), 없으면 Claude 화면 위치 L/R (가운데 C는 벽을 정하지 않음), 거리 = 깊이(있으면) 아니면 Claude 거리.
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))  # 공통 모듈 (src/nav/core)
+from nav_graph import CorridorGraph  # noqa: E402
 
 CONFIRM = 3      # 확정에 필요한 믿음 점수
 TARGET_CALLS = 2 # 목적지 번호는 서로 다른 호출(걸음) 몇 번에서 읽혀야 확정하나
@@ -26,9 +35,11 @@ class Memory:
         self.plates = {}   # (구간, 번호) → 기록
         self.places = []   # [{"from", "to", "place"}] 같은 장소가 이어진 구간
         self.events = []   # [{"t", "seg", "text"}]
+        self.graph = CorridorGraph(self.event)  # 복도 고정 그래프 (구간마다 새로)
 
     def new_segment(self, t):
         self.seg += 1
+        self.graph.reset()
         self.event(t, "엘리베이터에서 내림 (층·문패 기록을 새로 시작)")
 
     def event(self, t, text):
@@ -49,8 +60,16 @@ class Memory:
     def get(self, room):
         return self.plates.get((self.seg, room))
 
-    def see(self, t, room, side, m, on, recheck=None):
+    def set_ok(self, room, ok):
+        """확정을 밖에서 바꿀 때 (목적지 변경으로 풀기, 빠른 확인으로 확정). 그래프에도 알린다."""
+        p = self.get(room)
+        if p is not None:
+            p.update(ok=ok, ok_t=p.get("ok_t") if ok else None)
+        self.graph.set_ok(room, ok)
+
+    def see(self, t, room, side, m, on, recheck=None, wall=None, dist=None):
         """문패 번호를 한 번 읽음. recheck: True 일치 / False 다른 번호 / None 안 함·못 읽음.
+        wall: 깊이로 정한 사용자 기준 벽('왼쪽'/'오른쪽'/'?'), dist: 깊이로 잰 거리(m). 없으면 Claude 값.
         기록을 갱신하고 돌려준다 (rec["ok"]가 확정 여부)."""
         p = self.plates.setdefault((self.seg, room), {"room": room, "first": t, "last": -99, "n": 0, "total": 0,
                                                        "front": False, "door": False, "near": False, "recheck": False,
@@ -69,6 +88,9 @@ class Memory:
                 p["n"] += 1
         p["total"] += 1
         p["last"] = t
+        g_side = None if wall == "?" else wall or {"L": "왼쪽", "R": "오른쪽"}.get(side)
+        if room.isdigit():
+            self.graph.see(t, room, 1.0 if recheck is True else 0.9, g_side, dist if dist is not None else m)
         p["front"] |= side == "C" and m is not None and m <= FRONT_M
         p["door"] |= on == "door"
         p["recheck"] |= recheck is True
@@ -83,6 +105,7 @@ class Memory:
         p["wait_calls"] = room == self.target and p["calls"] < TARGET_CALLS  # 목적지: 점수는 되지만 호출 2번 전
         if not p["ok"] and p["trust"] >= CONFIRM and not p["wait_calls"]:
             p["ok"], p["ok_t"] = True, t
+            self.graph.set_ok(room, True)
             why = [f"{p['n']}번 읽음"] + ([f"호출 {p['calls']}번"] if room == self.target else []) + (["정면 가까이"] if p["front"] else []) + (["문 옆"] if p["door"] else []) + \
                   (["본 번호와 가까움"] if p["near"] else []) + (["확대 재확인"] if p["recheck"] else [])
             self.event(t, f"{room}호 문패 확정 ({p['side']}, {', '.join(why)})")

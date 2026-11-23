@@ -99,11 +99,13 @@ def test_unread_plate_read_by_recheck():
 
 
 def test_away_same_wall():
+    # 2026-11-24: 방향은 공통 판단(core/nav_graph.py, 확률). 같은 벽 317 → 316이 두 번씩 읽혀 근거가 쌓인 걸음에 '뒤쪽'
     script = [O([("317", "L", 3.0, "door")])] * 2 + [O([("316", "L", 3.0, "door")])] * 2
     nav = nv.Navigator(ScriptRunner(script), "318")
     exited(nav)
     recs = run(nav, 4)
-    assert recs[2]["action"] == "뒤로 돌기" and "멀어지고" in recs[2]["say"][0]
+    assert recs[2]["action"] != "뒤로 돌기"  # 316을 한 번 읽은 것만으로는 아직 확신 부족
+    assert recs[3]["action"] == "뒤로 돌기" and "318호는 뒤쪽인 것 같습니다" in recs[3]["say"][0]
 
 
 def test_no_trend_from_numbers_far_from_target():
@@ -215,9 +217,33 @@ def test_passed_target_then_neighbor_is_away():
     exited(nav)
     recs = run(nav, 18)
     assert recs[1]["action"] == "목적지 접근"
-    assert recs[2]["action"] == "뒤로 돌기"
-    assert all(r["action"] == "뒤로 돌기" for r in recs[2:])  # 412(가까워짐)에도 '방향이 맞습니다' 안 함
-    assert ["목적지와 멀어지고 있습니다. 뒤로 돌아가세요."] in [r["say"] for r in recs]
+    # 2026-11-24: 확정한 목적지 문패가 복도 그래프에서 사용자 뒤로 2칸 넘게 → '지나침'
+    assert recs[3]["action"] == "뒤로 돌기" and "410호를 지나친 것 같습니다" in recs[3]["say"][0]
+    assert all(r["action"] == "뒤로 돌기" for r in recs[3:])  # 412에도 '앞쪽입니다' 안 함
+    assert not any("앞쪽입니다" in x for r in recs for x in r["say"])
+
+
+def test_turn_detected_from_replate():
+    """'뒤로 돌아 주세요' 뒤 아는 문패를 반대쪽 벽에서 다시 보면 돌았다고 보고 '앞쪽'으로 바뀐다 (그래프는 지우지 않음)."""
+    script = [O([("316", "L", 3.0, "door")])] * 2 + [O([("315", "L", 3.0, "door")])] * 2 + \
+             [O([("314", "L", 3.0, "door")])] * 2 + [O([("315", "R", 3.0, "door")])] * 2 + [O([("316", "R", 3.0, "door")])] * 2
+    nav = nv.Navigator(ScriptRunner(script), "318")
+    exited(nav)
+    recs = run(nav, 10)
+    turn = next(i for i, r in enumerate(recs) if r["action"] == "뒤로 돌기")
+    assert any("318호는 앞쪽입니다" in x for r in recs[turn + 1:] for x in r["say"])
+    assert recs[-1]["state"]["dir_last"]["p_turned"] > 0.7
+
+
+def test_target_out_of_view_asks_to_check_side():
+    """목적지를 본 뒤 문패가 화면에서 사라져도, 걸은 거리로 남은 거리를 추정해 옆을 비추게 한다 (core/arrival.py)."""
+    script = [O([("410", "L", 3.0, "door")])] * 2 + [O()] * 12
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    exited(nav)
+    recs = run(nav, 14)
+    ask = [i for i, r in enumerate(recs) if any("왼쪽을 비춰" in x or "왼쪽으로 천천히 돌려" in x for x in r["say"])]
+    assert ask and recs[ask[0]]["action"] == "목적지 접근"  # (빠른 확인은 410을 5m 안에서 처음 볼 때 이미 한 번 요청됨)
+    assert any("가능성이 높습니다" in x for r in recs[ask[0] + 1:] for x in r["say"])
 
 
 # ---------------------------------------------------------------- 2026-11-19 계단·확인 겹치기·빠른 확인
