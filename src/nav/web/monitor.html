@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>길안내 관찰자</title>
+<style>
+:root { --bg:#fff; --fg:#111; --muted:#666; --card:#f3f3f3; --line:#ccc; --stop:#b3261e; --stop-fg:#fff; --accent:#0b57d0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111; --fg:#eee; --muted:#aaa; --card:#1d1d1d; --line:#333; --stop:#f28b82; --stop-fg:#000; --accent:#8ab4f8; } }
+:root[data-theme="dark"] { --bg:#111; --fg:#eee; --muted:#aaa; --card:#1d1d1d; --line:#333; --stop:#f28b82; --stop-fg:#000; --accent:#8ab4f8; }
+* { box-sizing:border-box; }
+body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.45 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+input, select, button { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); max-width:100%; }
+button.stop { background:var(--stop); color:var(--stop-fg); border:none; font-weight:700; padding:10px 16px; }
+.grid { display:grid; grid-template-columns:minmax(0,360px) minmax(0,1fr); gap:16px; }
+@media (max-width:760px) { .grid { grid-template-columns:1fr; } }
+img { width:100%; border-radius:10px; background:#000; min-height:200px; object-fit:contain; }
+.card { background:var(--card); border-radius:10px; padding:12px; margin-bottom:12px; }
+.speech { font-size:1.4rem; font-weight:700; }
+.k { color:var(--muted); display:inline-block; min-width:8em; }
+.muted { color:var(--muted); }
+ul { margin:0; padding-left:18px; }
+a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <strong>길안내 관찰자</strong>
+  <input id="code" type="password" placeholder="접속 코드" aria-label="접속 코드">
+  <button id="connect">연결</button>
+  <select id="sid" aria-label="세션 선택"></select>
+  <button id="stop" class="stop" disabled>비상 정지</button>
+  <a href="/records" target="_blank">다시보기 기록</a>
+  <span id="status" class="muted"></span>
+</header>
+<div class="grid">
+  <div><img id="frame" alt="가장 최근에 반영한 사진"><p class="muted" id="frameinfo"></p></div>
+  <div>
+    <div class="card"><div class="k">마지막 안내 문장</div><div class="speech" id="speech">-</div></div>
+    <div class="card">
+      <div><span class="k">목적지</span><span id="dest">-</span></div>
+      <div><span class="k">행동 · 층</span><span id="state">-</span></div>
+      <div><span class="k">확정 문패</span><span id="rooms">-</span></div>
+      <div><span class="k">인식 시간</span><span id="time">-</span></div>
+      <div><span class="k">보내기</span><span id="counts">-</span></div>
+      <div><span class="k">세션 크레딧</span><span id="credit">-</span></div>
+      <div><span class="k">오늘 크레딧</span><span id="daily">-</span></div>
+      <div><span class="k">상태</span><span id="run">-</span></div>
+    </div>
+    <div class="card"><div class="k">Claude가 본 것</div><div id="seen">-</div></div>
+    <div class="card"><div class="k">최근 기록</div><ul id="events"></ul></div>
+  </div>
+</div>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let code = '', timer = null, lastSeq = null;
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 무시 */ } }
+async function api(path, opts = {}) {
+  const r = await fetch(path, Object.assign({ headers: { 'X-Access-Code': code, 'Content-Type': 'application/json' } }, opts));
+  if (r.status === 401) throw new Error('접속 코드가 맞지 않습니다');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+async function tick() {
+  try {
+    const m = await api('/api/monitor');
+    $('daily').textContent = `${m.daily_credit.toFixed(2)} / ${m.limits.per_day}` + (m.fake ? ' (가짜 응답 모드)' : '');
+    const sel = $('sid'), cur = sel.value;
+    sel.innerHTML = '';
+    for (const s of m.sessions) {
+      const o = document.createElement('option');
+      o.value = s.session_id;
+      o.textContent = `${s.session_id} · ${s.target}호${s.arrived ? ' (도착)' : ''}${s.stopped ? ' (멈춤)' : ''}`;
+      sel.appendChild(o);
+    }
+    if (cur && m.sessions.some((s) => s.session_id === cur)) sel.value = cur;
+    $('status').textContent = `갱신 ${new Date().toLocaleTimeString()}`;
+    if (!sel.value) { $('stop').disabled = true; return; }
+    const s = await api(`/api/session/${sel.value}`), d = s.detail;
+    $('stop').disabled = s.stopped;
+    $('speech').textContent = (s.last_say || []).join(' ') || '-';
+    $('dest').textContent = `${s.target}호 · 구간 ${d.segment + 1}` + (s.info.mode === 'file' ? ` · 영상 파일 ${(s.info.files || []).join(', ')}` : ' · 카메라');
+    $('state').textContent = `${d.action} · ${d.floor ? d.floor + '층' : '층 모름'}${d.wrong_floor ? ' (목적지 층 아님)' : ''}${d.target_pending ? ' · 목적지 확인 중' : ''}${d.arrived ? ' · 도착' : ''}`;
+    $('rooms').textContent = (d.confirmed || []).join(', ') || '-';
+    $('time').textContent = d.latency_s != null ? `인식 ${d.latency_s}초 · 찍은 뒤 반영 ${d.lag_s ?? '-'}초 · 갱신 간격 중앙값 ${d.update_interval_median ?? '-'}초` : '-';
+    const c = d.counts;
+    $('counts').textContent = `받음 ${c.sent} · 반영 ${c.applied} · 버림 ${c.stale} · 바쁨 ${c.busy} · 처리 중 ${d.inflight}`;
+    $('credit').textContent = `${d.credit.toFixed(2)} / ${m.limits.per_session}`;
+    $('run').textContent = s.stopped ? `멈춤 (${s.stop_reason})` : '진행 중';
+    const pl = (d.plates || []).map((p) => `${p.n ? p.n + '호' : '번호 못 읽음'} ${p.name} ${p.side}${p.m ? ' ' + p.m + 'm' : ''}`);
+    $('seen').innerHTML = `장소 ${esc(d.place)} · 층 표시 ${esc(d.floor_sign || '-')} · ${d.elevator ? '엘리베이터 ' + esc(d.elevator.side) : '엘리베이터 없음'}<br>` +
+      `문패: ${esc(pl.join(' / ') || '없음')}<br>재확인: ${d.recheck ? esc(`${d.recheck.asked} → ${d.recheck.read || '못 읽음'} (${d.recheck.why})`) : '-'}`;
+    $('events').innerHTML = (d.events || []).slice().reverse().map((e) => `<li>${esc(e)}</li>`).join('');
+    if (s.frame_seq !== lastSeq) {
+      lastSeq = s.frame_seq;
+      $('frame').src = `/api/session/${sel.value}/latest-frame?code=${encodeURIComponent(code)}&t=${Date.now()}`;
+      $('frameinfo').textContent = `사진 #${s.frame_seq ?? '-'} · 찍은 시각 ${d.t ?? '-'}초`;
+    }
+  } catch (e) { $('status').textContent = String(e.message || e); }
+}
+$('connect').addEventListener('click', () => {
+  code = $('code').value.trim(); save('nav_code', code);
+  if (timer) clearInterval(timer);
+  tick(); timer = setInterval(tick, 1000);
+});
+$('sid').addEventListener('change', () => { lastSeq = null; tick(); });
+$('stop').addEventListener('click', async () => {
+  const sid = $('sid').value;
+  if (!sid || !confirm('이 세션의 안내를 멈출까요?')) return;
+  try { await api(`/api/session/${sid}/event`, { method: 'POST', body: JSON.stringify({ type: 'stop' }) }); tick(); }
+  catch (e) { $('status').textContent = String(e.message || e); }
+});
+const saved = load('nav_code');
+if (saved) { $('code').value = saved; $('connect').click(); }
+</script>
+</body>
+</html>

@@ -11,3 +11,8 @@ data/video/frames_8fps/
 outputs/
 review/img/
 review/ref_crops/
+
+# vlm_nav_claude(브랜치 claude) 추가: 키·모델·영상·가상환경은 커밋하지 않음
+.env
+models/
+data/videos/
