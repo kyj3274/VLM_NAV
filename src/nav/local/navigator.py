@@ -358,8 +358,10 @@ class Navigator:
             return []
         elif kind == "뒤쪽":
             # 돌기 전 문패만으로 낸 판단은 since 이후 새 문패가 없어 '모름'이 되므로, 여기 오면 돈 뒤 새로 본 문패로도 뒤쪽이라는 뜻
-            out.append(f"{target}호는 뒤쪽인 것 같습니다. 뒤로 돌아 주세요.")
+            out.append(f"{target}호를 지나친 것 같습니다. 뒤로 돌아 주세요." if d.get("passed")
+                       else f"{target}호는 뒤쪽인 것 같습니다. 뒤로 돌아 주세요.")
             self.turn_reset()
+            self.arrival.cancel()  # 지나쳤으면 도착 위치 추정을 버림 (다시 보면 새로 시작)
         elif kind == "근처" and st["dir_said"] != "근처":
             out.append(f"{target}호 근처입니다. 문패를 확인하며 천천히 가세요.")
             self.arrival.near(self.t_now())
