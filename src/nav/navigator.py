@@ -382,6 +382,7 @@ class Navigator:
         heading: 사진을 찍을 때 휴대폰 나침반 방향(도, 없으면 None). 내린 뒤 방향 정하기에 쓴다 (2026-11-23 B8).
         반환: 이 걸음의 기록."""
         st, target, tf = self.st, self.target, self.tf
+        self._ev0 = len(self.mem.events)  # 이 걸음에서 생긴 사건(후보·확정·지나침·하차·방향…)을 기록에 함께 남김
         if t is not None:
             self.clock = t
         clock = self.clock
@@ -1066,7 +1067,8 @@ class Navigator:
                "claude_calls": len(calls), "cached": o["cached"], "credit": round(sum(c.get("credit") or 0 for c in calls), 5),
                "tokens": {"in": sum(c.get("input_tokens", 0) for c in calls), "out": sum(c.get("output_tokens", 0) for c in calls),
                           "cache_read": sum(c.get("cache_read", 0) for c in calls)},
-               "latency_seconds": round(latency, 3), "error": error}
+               "latency_seconds": round(latency, 3), "error": error,
+               "events": [e["text"] for e in self.mem.events[getattr(self, "_ev0", len(self.mem.events)):]]}
         print(f"[{self.target}] {self.seq[:2]} {sec:05.1f}s {rec['latency_seconds']:.2f}s {rooms} "
               f"{st['act']} | {' / '.join(say)}" + (f" [오류 {error}]" if error else ""), flush=True)
         self.records.append(rec)

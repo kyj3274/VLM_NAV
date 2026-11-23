@@ -13,7 +13,7 @@ const now = () => performance.now();
 
 const S = {
   code: '', sid: null, target: '', name: '', running: false, loopActive: false, listening: false, prep: null,
-  heading: null, oriAsked: false, oriOk: null, motionAsked: false, motionOk: null,
+  heading: null, beta: null, gamma: null, clog: [], oriAsked: false, oriOk: null, motionAsked: false, motionOk: null,
   stream: null, cameraDenied: false, ultrawideId: null, cameraLabel: '', wakeLock: null, zoomMin: null, camInfo: null,
   prevNet: null,
   audio: null, speechUnlocked: false, voice: null, lastSpoken: '', lastSpeech: '', priorityActive: false,
@@ -27,6 +27,20 @@ const S = {
   jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false,
 };
 
+// 휴대폰 쪽 기록 (2026-11-23 시험 전 보강): 응답 받은 시각, 음성 시작·끝, 네트워크 오류를 모아 3초마다 서버로 보냄
+const tnow = () => (S.t0 ? +((now() - S.t0) / 1000).toFixed(3) : null);
+function clog(k, obj) {
+  if (!S.sid) return;
+  S.clog.push({ k, t: tnow(), epoch: Date.now() / 1000, ...(obj || {}) });
+  if (S.clog.length > 300) S.clog.splice(0, S.clog.length - 300);
+}
+async function flushClog() {
+  if (!S.sid || !S.clog.length || !S.code) return;
+  const events = S.clog.splice(0, S.clog.length);
+  try { await postJSON(`/api/session/${S.sid}/clientlog`, { events }, 10000); }
+  catch (e) { S.clog.unshift(...events.slice(-200)); }
+}
+setInterval(flushClog, 3000);
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 사생활 모드 */ } }
 function drop(k) { try { localStorage.removeItem(k); } catch (e) { /* 무시 */ } }
@@ -53,8 +67,12 @@ function say(text, opts = {}) {
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ko-KR';
   if (S.voice) u.voice = S.voice;
-  u.onstart = () => showCaption(text, opts.err);
-  if (opts.priority) { S.priorityActive = true; u.onend = u.onerror = () => { S.priorityActive = false; }; }
+  const src = opts.src || 'local';
+  u.onstart = () => { showCaption(text, opts.err); clog('say_start', { text, src, seq: opts.seq ?? null }); };
+  u.onend = () => { if (opts.priority) S.priorityActive = false; clog('say_end', { text, src, seq: opts.seq ?? null }); };
+  u.onerror = (ev) => { if (opts.priority) S.priorityActive = false; clog('say_error', { text, src, error: ev && ev.error }); };
+  if (opts.priority) S.priorityActive = true;
+  clog('say_queued', { text, src, queue: !!queue, seq: opts.seq ?? null });
   speechSynthesis.speak(u);
   if (!queue) showCaption(text, opts.err);
 }
@@ -106,6 +124,7 @@ function onOrientation(e) {
   let h = null;
   if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) h = e.webkitCompassHeading; // iOS
   else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
+  if (typeof e.beta === 'number') { S.beta = e.beta; S.gamma = e.gamma; }   // 기울기 (앞뒤 beta, 좌우 gamma)
   if (h === null) return;
   S.heading = h;
   if (S.running && $('sensors').checked) sensorSay(S.guide.onHeading(h, now() / 1000));
@@ -118,7 +137,7 @@ function onMotion(e) {
   if (S.running && $('sensors').checked) sensorSay(outs);
 }
 function sensorSay(outs) {
-  for (const t of outs) { CUE.sensor(); say(t, { force: true, queue: S.priorityActive }); }
+  for (const t of outs) { CUE.sensor(); say(t, { force: true, queue: S.priorityActive, src: 'sensor' }); }
 }
 function requestOrientation() {
   if (S.oriAsked || !('DeviceOrientationEvent' in window)) return Promise.resolve(S.oriOk);
@@ -407,6 +426,7 @@ $('video').addEventListener('ended', async () => {
 });
 function stopGuidance(msg) {
   S.running = false;
+  clog('stop', { msg: msg || '' }); flushClog();
   if (msg) say(msg, { force: true });
   if (fileMode()) $('video').pause();
   $('guide').hidden = true; $('dest-page').hidden = false;
@@ -474,13 +494,14 @@ function grabFull() {   // 원본 해상도 그대로 (줄이지 않음: 문패 
 const toJpeg = (canvas) => new Promise((r) => canvas.toBlob(r, 'image/jpeg', S.jpegQ));
 async function bestFrame() {   // 1.5초 구간에서 가장 선명한 장. 선명도 기준 이상이 나오면 (구간 시작 0.5초 뒤부터) 바로 보냄
   // 기준 이상인 장 중 가장 최근 장을 보낸다 (구간 처음에 찍은 장이 0.5초를 기다려 묵지 않게)
-  let best = null, bestS = -1, at = null, heading = null, seg = S.seg, fresh = null;
+  let best = null, bestS = -1, at = null, heading = null, seg = S.seg, fresh = null, bestShot = null;
   const tb = now();
   for (let i = 0; i < S.shots && S.running && !S.listening; i++) {
     const s = sharpness();
     if (s > bestS || s >= S.sharpMin) {
-      const shot = { canvas: grabFull(), t: (now() - S.t0) / 1000, heading: S.heading, seg: S.seg, sharp: Math.round(s) };
-      if (s > bestS) { bestS = s; best = shot.canvas; at = shot.t; heading = shot.heading; seg = shot.seg; }
+      const shot = { canvas: grabFull(), t: (now() - S.t0) / 1000, heading: S.heading, seg: S.seg, sharp: Math.round(s),
+        beta: S.beta, gamma: S.gamma, epoch: Date.now() / 1000 };
+      if (s > bestS) { bestS = s; best = shot.canvas; at = shot.t; heading = shot.heading; seg = shot.seg; bestShot = shot; }
       if (s >= S.sharpMin) fresh = shot;
     }
     if (now() - tb >= S.minSendMs && fresh) {
@@ -489,6 +510,7 @@ async function bestFrame() {   // 1.5초 구간에서 가장 선명한 장. 선�
     await sleep(S.intervalMs / S.shots);
   }
   return best && best.width ? { canvas: best, t: at, heading, seg, start: tb, sharp: Math.round(bestS), early: false,
+    beta: bestShot && bestShot.beta, gamma: bestShot && bestShot.gamma, epoch: bestShot && bestShot.epoch,
     pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 } : null;
 }
 async function loop() {
@@ -499,8 +521,9 @@ async function loop() {
       const f = await bestFrame();
       if (!S.running) break;
       if (!f || S.listening) { await sleep(200); continue; }
-      if (S.inflight >= S.maxInflight) S.localBusy++;   // 동시 2개면 이번 장은 보내지 않음
-      else sendFrame(f);   // 기다리지 않음 (겹쳐 보내기)
+      if (S.inflight >= S.maxInflight) {   // 동시 2개면 이번 장은 보내지 않음
+        S.localBusy++; clog('local_busy', { shot_t: +f.t.toFixed(3), sharp: f.sharp ?? null, inflight: S.inflight });
+      } else sendFrame(f);   // 기다리지 않음 (겹쳐 보내기)
       const rest = f.start + S.intervalMs - now();   // 일찍 보내도 보내는 간격은 1.5초 그대로 (크레딧 같음)
       if (rest > 0) await sleep(rest);
     }
@@ -512,6 +535,7 @@ async function sharpShot(notBefore) {   // notBefore 뒤에 선명도 기준 이
   while (S.running && now() - tb < S.quickWaitMs) {
     const s = sharpness();
     if (s >= S.sharpMin) return { canvas: grabFull(), t: (now() - S.t0) / 1000, heading: S.heading, seg: S.seg, sharp: Math.round(s),
+      beta: S.beta, gamma: S.gamma, epoch: Date.now() / 1000,
       start: tb, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 };
     await sleep(100);
   }
@@ -542,16 +566,22 @@ async function sendFrame(f, kind) {
   // 지연 측정 (2026-11-19): 휴대폰 시계(시작부터 초)로 고르기 끝·인코딩·보낸 시각, 사진 용량, 바로 전에 끝난 요청의 왕복
   fd.append('client', JSON.stringify({ pick_ms: Math.round(f.pickMs), size: [f.canvas.width, f.canvas.height], inflight: S.inflight,
     pick_end: f.pickEnd != null ? +f.pickEnd.toFixed(3) : null, enc_ms: Math.round(encMs), bytes: blob.size,
-    sharp: f.sharp ?? null, early: !!f.early, jpeg_q: S.jpegQ,
+    sharp: f.sharp ?? null, early: !!f.early, jpeg_q: S.jpegQ, kind: kind || 'frame', retries: 0,
+    beta: f.beta != null ? +f.beta.toFixed(1) : null, gamma: f.gamma != null ? +f.gamma.toFixed(1) : null,
+    shot_epoch: f.epoch ?? null, sent_epoch: Date.now() / 1000, steps: S.guide ? S.guide.steps : null,
     sent_at: +((t0 - S.t0) / 1000).toFixed(3), prev: S.prevNet }));
   try {
     const r = await api(`/api/session/${S.sid}/${kind === 'confirm' ? 'confirm' : 'frame'}`, { method: 'POST', body: fd, timeout: 30000 });
     if (r.status === 'ok') S.lastRtt = Math.round(now() - t0);
     S.prevNet = { seq: r.seq, rtt_ms: Math.round(now() - t0), got_at: +((now() - S.t0) / 1000).toFixed(3), server_s: r.server_s };
+    clog('got', { seq: r.seq ?? null, kind: kind || 'frame', status: r.status, shot_t: +f.t.toFixed(3), rtt_ms: Math.round(now() - t0),
+      say: r.say || [], action: r.action || null, exited: !!r.exited });
     S.failSpoken = false; setError('');
     onFrameReply(r);
   } catch (e) {
     if (e.code === 401) { codeRejected(); return; }
+    clog('net_fail', { where: kind || 'frame', shot_t: +f.t.toFixed(3), error: String(e && (e.name === 'AbortError' ? '시간 초과(30초)' : e.message)),
+      ms: Math.round(now() - t0) });
     netFail();
   } finally { S.inflight--; renderTop(); }
 }
@@ -570,7 +600,7 @@ function onFrameReply(r) {
         if (r.arrived) CUE.arrived();
         else if (r.action !== S.lastAction && /뒤로|돌아가/.test(text)) CUE.left();
         else if (r.action !== S.lastAction) CUE.stage();
-        say(text, { queue: !newer });   // 늦게 온(먼저 보낸) 응답은 끊지 않고 뒤에
+        say(text, { queue: !newer, src: 'server', seq: r.seq });   // 늦게 온(먼저 보낸) 응답은 끊지 않고 뒤에
         S.lastSpeech = text;
         if (S.guide) S.guide.onGuidance(r.say, r.action, now() / 1000);
       }
@@ -592,7 +622,7 @@ async function stopAfterArrival() {
 }
 setInterval(() => {   // 응답이 오래 없으면 한 번 "잠시 멈춰 주세요"
   if (!S.running || S.listening || !$('slowwarn').checked || S.slowSaid) return;
-  if (now() - S.lastAppliedAt > S.slowWarnMs) { S.slowSaid = true; say('잠시 멈춰 주세요.', { force: true }); }
+  if (now() - S.lastAppliedAt > S.slowWarnMs) { S.slowSaid = true; clog('slow_warn', { since_ms: Math.round(now() - S.lastAppliedAt) }); say('잠시 멈춰 주세요.', { force: true, src: 'slow_warn' }); }
 }, 1000);
 
 function netFail() {
@@ -612,13 +642,13 @@ async function sendEvent(type, detail) {
   try {
     const r = await postJSON(`/api/session/${S.sid}/event`, { type, detail: detail || {} });
     const text = (r.say || []).join(' ');
-    if (text) { say(text, { force: true }); S.lastSpeech = text; }
+    if (text) { say(text, { force: true, src: 'event_' + type }); S.lastSpeech = text; }
     return r;
-  } catch (e) { netFail(); return null; }
+  } catch (e) { clog('net_fail', { where: 'event_' + type, error: String(e && e.message) }); netFail(); return null; }
 }
 $('repeat').addEventListener('click', () => {
   unlockAudio();
-  say(S.lastSpeech || '아직 안내가 없습니다.', { force: true });
+  say(S.lastSpeech || '아직 안내가 없습니다.', { force: true, src: 'repeat' });
   if (S.sid) postJSON(`/api/session/${S.sid}/event`, { type: 'repeat' }).catch(() => {});
 });
 $('exited').addEventListener('click', () => { unlockAudio(); CUE.stage(); S.seg += 1; sendEvent('exited'); });

@@ -370,3 +370,39 @@ def test_auto_exit_then_button_is_same_exit(tmp_path):
                data={"t": "9.0", "heading": "90", "seg": "1"}).json()
     assert r["say"] == ["410호는 오른쪽입니다. 오른쪽으로 가세요."] and r["direction"]["strength"] == "강"
     assert ws.nav.records[-1]["heading"] == 90.0
+
+
+def test_session_log_has_everything_for_analysis(tmp_path):
+    """2026-11-23 시험 전 기록 보강: 사진마다 시각·사진 정보·센서·Claude 원본 출력·판단 사건, 휴대폰 기록, 버튼 응답 문장."""
+    c, _ = app_with(tmp_path)
+    sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
+    import re as _re
+    assert _re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{4}", sid)  # 세션 이름 = 시작 시각
+    cl = {"size": [720, 1280], "bytes": 1234, "sharp": 400, "early": True, "kind": "frame", "retries": 0, "beta": 80.5,
+          "gamma": -2.0, "shot_epoch": 1.0, "sent_epoch": 1.2, "inflight": 1}
+    r = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
+               data={"t": "0.0", "heading": "123.4", "steps": "7", "client": json.dumps(cl), "seg": "0"}).json()
+    assert r["status"] == "ok"
+    c.post(f"/api/session/{sid}/clientlog", headers=H, json={"events": [
+        {"k": "got", "t": 1.5, "epoch": 2.0, "seq": 1, "status": "ok"},
+        {"k": "say_start", "t": 1.6, "text": "안내", "src": "server", "seq": 1}, {"k": "say_end", "t": 3.0, "text": "안내"}]})
+    e = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "repeat"}).json()
+    d = tmp_path / sid
+    assert (d / "frames" / "00001.jpg").exists()
+    lines = [json.loads(x) for x in (d / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    rec = next(x for x in lines if x.get("web_seq") == 1 and "event" not in x)
+    tm = rec["timing"]
+    for k in ("arrive_s", "recv_s", "recv_epoch", "see_start_s", "see_end_s", "ready_s", "apply_start_s", "applied_s"):
+        assert tm[k] is not None, k
+    assert tm["arrive_s"] <= tm["recv_s"] <= tm["see_start_s"] <= tm["see_end_s"] <= tm["applied_s"]
+    assert rec["img_size"] and rec["img_bytes"] > 0 and rec["inflight_server"] == 1
+    assert rec["client"]["beta"] == 80.5 and rec["client"]["sharp"] == 400 and rec["client"]["early"] is True
+    assert rec["heading"] == 123.4 and rec["steps"] == 7
+    see = rec["calls_log"][0]
+    assert see["kind"] == "see" and see["raw_text"] and "attempts" in see and "timed_out" in see
+    assert "events" in rec and rec["obs"]["place"] and "floor_src" in rec["state"] and rec["say"] is not None
+    kinds = [x.get("kind") for x in lines if x.get("event") == "client"]
+    assert kinds == ["got", "say_start", "say_end"]
+    ev = next(x for x in lines if x.get("event") == "repeat")
+    assert "epoch" in ev and "say" in ev
+    assert any(x.get("event") == "start" for x in lines)
