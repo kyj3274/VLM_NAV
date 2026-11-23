@@ -359,7 +359,8 @@ def test_auto_exit_then_button_is_same_exit(tmp_path):
     factory = scripted_factory([inside] * 3 + [hall] * 3 + [{**BASE, "rr": [["401", "410", "R"]]}], [0.0] * 7)
     c, _ = app_with(tmp_path, factory=factory)
     sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
-    rs = [frame(c, sid, 1.5 * i) for i in range(6)]
+    rs = [c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
+                 data={"t": str(1.5 * i), "heading": "90", "steps": str([3, 3, 3, 3, 5, 7][i])}).json() for i in range(6)]
     assert not rs[4]["exited"] and rs[5]["exited"] and rs[5]["action"] == "멈추고 둘러보기"
     assert rs[5]["say"][0] == "엘리베이터에서 내렸습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()

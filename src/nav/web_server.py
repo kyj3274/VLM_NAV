@@ -475,7 +475,8 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 t_cap = max(t_cap, float(ws.nav.clock) + 0.01) if ws.nav.records else t_cap
                 t_apply = time.monotonic()
                 try:
-                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked, heading=heading)
+                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked, heading=heading,
+                                      steps=steps)
                 except CreditLimit as e:  # 확대 재확인에서 한도
                     sync_credit(ws)
                     return stop(ws, str(e))

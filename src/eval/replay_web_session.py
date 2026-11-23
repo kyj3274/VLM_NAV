@@ -176,7 +176,7 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
         before = b_rec
         t_cap = max(r["t"], float(nav.clock) + 0.01) if nav.records else r["t"]
         rec = nav.step(t=round(t_cap, 2), observed=o, quick=True, heading=r.get("heading")) if kind == "quick" else \
-            nav.step(t=round(t_cap, 2), observed=o, heading=r.get("heading"))
+            nav.step(t=round(t_cap, 2), observed=o, heading=r.get("heading"), steps=r.get("steps"))
         asked = runner.asked[before:]
         dur = sum(a["sec"] if "sec" in a else (rechecks.get((a["frame"], a["asked"])) or {"sec": rc_default})["sec"]
                   for a in asked)

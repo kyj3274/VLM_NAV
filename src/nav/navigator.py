@@ -77,6 +77,8 @@ EXIT_IN = 3       # 엘리베이터 안(in_elev) 장면이 이 장 연속이면 
 EXIT_OUT = 3      # 그 뒤 복도·홀 장면이 이 장 연속이면 내린 것으로 봄 (버튼 "내렸어요"와 같은 처리)
                   # 지시는 2장·2장. 휴대폰 기록 2개(실제 탑승 2번)에서 2·2는 잘못된 하차가 2번(밖에서 닫힌 문을 '안'으로 읽음,
                   # 칸 안에서 열린 문 너머 로비를 '복도'로 읽음), 3·3은 실제 하차 2번만 (판 4 기록·판 5 다시 인식 모두). 감지는 약 1.5초 늦음
+ELEV_CLOSE_M = 2.0  # 탄 뒤 이 거리 안의 엘리베이터 문(근거 doors·panel)이 보이면 아직 안으로 봄
+EXIT_STEPS = 3    # 복도·홀 장면 3장 동안 이 걸음 이상 걸어야 내림 (걸음 수를 받지 못하는 세션은 장면만)
 EXIT_DUP = 20     # 내림 처리 뒤 이 초 안에 다시 오는 내림(버튼·자동)은 같은 하차로 보고 다시 처리하지 않음.
                   # 자동 감지는 내린 뒤 복도 사진 2장(약 3초) + 응답(2~4초) 뒤라, 그 무렵 사용자가 버튼을 눌러도 겹치지 않게 넉넉히.
 SCAN_SEC = 6      # 내린 직후 둘러보기 최대 시간. 그동안은 진행 안내(직진 등)를 하지 않는다
@@ -162,6 +164,7 @@ class Navigator:
         self.announce = True  # 첫 걸음에 "○호로 안내를 시작합니다"를 말할지 (웹은 미리 말함)
         self.last_exit = None   # 마지막으로 내림을 처리한 시각 (같은 하차를 두 번 처리하지 않게)
         self.exit_say = False   # 다음 걸음에서 내림 문장을 말할지 (웹 버튼은 응답에서 바로 말하므로 False)
+        self.steps_seen = False  # 휴대폰 걸음 수가 한 번이라도 0보다 컸나 (센서가 꺼져 있으면 걸음 조건을 쓰지 않음)
         self.plate_dirs = []    # 내린 뒤 걸으며 확정한 문패와 그때 나침반 방향 (다른 층 같은 끝자리 번호의 약한 근거, B8c)
 
     def start_head(self):
@@ -268,7 +271,7 @@ class Navigator:
                            el_passed=False, stair=new_stair(), floor_temp=src == "엘리베이터 표시창",
                            floor_src=src, ask_t=None, check_t=None, el_disp=None,
                            elev_run=0, elev_in=False, hall_run=0, exit_cand=None, dir=None, far={},
-                           scan=self.new_scan(self.seg_start))
+                           scan=self.new_scan(max(self.seg_start, self.clock)))  # 자동 감지: 내림을 알고 "멈춰서 비춰 주세요"라고 한 때부터
             if carry and src == "엘리베이터 표시창":
                 self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
             elif carry:
@@ -292,11 +295,25 @@ class Navigator:
         self.exit_say = False
         return [self.exit_sentence()]
 
-    def watch_exit(self, obs, clock):
+    def watch_exit(self, obs, clock, steps=None):
         """자동 하차 감지 (2026-11-23 사용자 지시 B5): 엘리베이터 안 장면이 EXIT_IN장 이상 이어진 뒤 복도·홀 장면이
-        EXIT_OUT장 연속이면 버튼 "내렸어요"와 같은 처리. 반환: 감지했으면 기록용 dict."""
+        EXIT_OUT장 연속이고 그동안 EXIT_STEPS걸음 이상 걸었으면(걸음 수가 있을 때) 버튼 "내렸어요"와 같은 처리.
+        직전까지 엘리베이터 안이었으면 닫힌 엘리베이터 문만 보이는 장면(cd)·층 버튼 패널은 계속 안으로 본다
+        (2026-11-23 시험 1: 칸 안에서 닫힌 문을 본 사진을 elev_hall로 읽어 잘못 내림). 반환: 감지했으면 기록용 dict."""
         st = self.st
-        if obs["place"] == "in_elev":
+        if steps is not None and steps > 0:
+            self.steps_seen = True
+        # 탄 뒤(안 장면 EXIT_IN장)에는 엘리베이터 문이 가까이(ELEV_CLOSE_M 안) 주인공인 장면·닫힌 문만 보이는 장면(cd)·
+        # 층 버튼 패널은 Claude 장소와 상관없이 계속 안으로 본다. 판 6 프롬프트로도 칸 안에서 본 닫힌 문을 절반 넘게
+        # elev_hall로 읽어서(시험 1: 17장 중 10장) 거리 규칙을 더함. 타기 전에는 쓰지 않음(밖에서 기다리며 본 닫힌 문,
+        # 없는 패널을 본 사진이 '탔음'이 되지 않게).
+        e = obs.get("elev") or {}
+        close = e.get("why") in ("doors", "panel") and (e.get("m") is None or e["m"] <= ELEV_CLOSE_M)
+        inside = obs["place"] == "in_elev" or (st["elev_in"] and (obs.get("panel") or obs.get("closed_doors") or close))
+        if inside and obs["place"] != "in_elev":
+            self.mem.event(clock, "탄 뒤 엘리베이터 문이 가까이 보임(" + ("닫힌 문만" if obs.get("closed_doors") else
+                           "층 버튼 패널" if obs.get("panel") else f"문 {e.get('m')}m") + "): 계속 안으로 봄")
+        if inside:
             st["elev_run"] += 1
             st["hall_run"], st["exit_cand"] = 0, None
             if st["elev_run"] >= EXIT_IN and not st["elev_in"]:
@@ -311,10 +328,14 @@ class Navigator:
             return None
         st["hall_run"] += 1
         if st["hall_run"] == 1:
-            st["exit_cand"] = {"t": clock, "floor": st["floor"]}
+            st["exit_cand"] = {"t": clock, "floor": st["floor"], "steps": steps}
         if st["hall_run"] < EXIT_OUT:
             return None
         cand = st["exit_cand"]
+        walked = None if (steps is None or cand.get("steps") is None or not self.steps_seen) else steps - cand["steps"]
+        if walked is not None and walked < EXIT_STEPS:
+            return None  # 밖 장면이지만 아직 걷지 않음 (문이 열린 채 서 있음 등): 더 기다림
+        st_n = st["hall_run"]
         st.update(elev_in=False, hall_run=0, exit_cand=None)
         if self.last_exit is not None and clock - self.last_exit < EXIT_DUP:
             self.mem.event(clock, f"자동 하차 감지했지만 {EXIT_DUP}초 안에 이미 내림 처리: 같은 하차로 봄")
@@ -324,8 +345,9 @@ class Navigator:
             and st["floor_src"] != "엘리베이터 표시창" else None
         seq = f"live_{self.si + 1}" if str(self.seq).startswith("live_") else f"{self.seq}+내림"  # 웹 기록 화면은 live_번호
         self.new_segment(seq, start=cand["t"], keep=keep)
-        self.mem.event(clock, f"엘리베이터에서 내림 (자동 감지: 엘리베이터 안 {EXIT_IN}장 → 복도·홀 {EXIT_OUT}장)")
-        return {"t": cand["t"], "kept_floor": keep[0] if keep else None}
+        self.mem.event(clock, f"엘리베이터에서 내림 (자동 감지: 엘리베이터 안 {EXIT_IN}장 → 복도·홀 {st_n}장"
+                       + (f", {walked}걸음)" if walked is not None else ", 걸음 수 없음)"))
+        return {"t": cand["t"], "kept_floor": keep[0] if keep else None, "walked": walked}
 
     # ------------------------------------------------------------ 재확인 대상
     def recheck_pick(self, obs):
@@ -394,7 +416,7 @@ class Navigator:
         sc = self.st.get("scan")
         return bool(sc) and not sc["done"]
 
-    def step(self, frames=None, t=None, observed=None, quick=False, rechecked=None, heading=None):
+    def step(self, frames=None, t=None, observed=None, quick=False, rechecked=None, heading=None, steps=None):
         """frames: 1초 구간의 사진 파일 경로들 (영상 실행). t: 사진 찍은 시각(초, 겹쳐 보내기·웹),
         observed: 이미 받은 인식 결과(겹쳐 보내기에서 다른 스레드가 부른 것).
         quick: 문 앞 빠른 확인 사진(quick_obs 형식, 확대 재확인 안 함).
@@ -422,7 +444,7 @@ class Navigator:
 
         self.mem.place(clock, cp.PLACE_KO.get(obs["place"]))
         if not quick:  # 자동 하차 감지 (B5). 감지하면 이 사진부터 새 구간의 걸음
-            auto = self.watch_exit(obs, clock)
+            auto = self.watch_exit(obs, clock, steps)
             if auto:
                 note["auto_exit"] = auto
         si = self.si
@@ -1165,8 +1187,8 @@ def main():
     ap.add_argument("--cache", default=str(ROOT / "outputs/cache/claude_v2.jsonl"),
                     help="인식 캐시 (2단계 결과는 outputs/cache/claude.jsonl: say 칸이 있던 프롬프트)")
     ap.add_argument("--name", default="claude")
-    ap.add_argument("--prompt-version", type=int, default=5,
-                    help="인식 프롬프트 판 (5: 2026-11-23 호실 범위 안내판·긴 복도 방향·엘리베이터 안 기준, "
+    ap.add_argument("--prompt-version", type=int, default=6,
+                    help="인식 프롬프트 판 (6: 2026-11-23 엘리베이터 안·밖 기준, 5: 2026-11-23 호실 범위 안내판·긴 복도 방향·엘리베이터 안 기준, "
                          "4: 2026-11-23 엘리베이터 안 층 표시창, 3: 2026-11-19 계단 층 표시·엘리베이터 근거 4종, "
                          "2: 이전 캐시 재생)")
     ap.add_argument("--start-floor", default=None, help="사용자가 말한 출발 층 (예: 1). 없으면 층 모름으로 시작")

@@ -791,7 +791,7 @@ def test_auto_exit_keeps_floor_from_first_hall_photo():
     recs = steps(nav, RIDE + [O([("405", "C", 2.5, "door")])] + HALLS[1:])
     k = nv.EXIT_IN
     assert recs[k]["state"]["floor"] == "4"
-    assert recs[-1].get("auto_exit") == {"t": recs[k]["t"], "kept_floor": "4"} and recs[-1]["state"]["floor"] == "4"
+    assert recs[-1].get("auto_exit") == {"t": recs[k]["t"], "kept_floor": "4", "walked": None} and recs[-1]["state"]["floor"] == "4"
 
 
 def test_exit_wrong_floor_ends_scan_without_direction():
@@ -866,11 +866,11 @@ def test_scan_wall_plates_with_compass_two_votes():
 def test_scan_wall_plates_one_vote_waits_then_maybe():
     """비교가 1개뿐이면 6초 끝에 '○쪽일 가능성이 높습니다' (보통)."""
     nav = live_nav()
-    steps(nav, RIDE + HALLS, heading=0.0)  # 첫 복도 4.5초 = 구간 시작 → 10.5초에 끝
+    steps(nav, RIDE + HALLS, heading=0.0)  # 내림을 안 때(밖 3장째 7.5초)부터 둘러보기 → 13.5초에 끝
     recs = steps(nav, [O([("405", "L", 2.0, "door"), ("407", "L", 6.0, "door")]), O(), O(), O()], t0=9.0, heading=0.0)
     assert recs[0]["say"] == [] or "가능성" not in " ".join(recs[0]["say"])
-    r = recs[1]
-    assert r["t"] == 10.5 and r["say"] == ["410호는 정면일 가능성이 높습니다. 앞으로 천천히 직진하세요. 문패로 확인하겠습니다."]
+    r = recs[3]
+    assert r["t"] == 13.5 and r["say"] == ["410호는 정면일 가능성이 높습니다. 앞으로 천천히 직진하세요. 문패로 확인하겠습니다."]
     assert r["direction"]["strength"] == "보통"
 
 
@@ -985,3 +985,63 @@ def test_quick_photo_does_not_drive_trend():
     assert recs[9]["confirm_now"]
     r = nav.step(t=10.4, observed=qo(10.4, [("408", "R", 2.0)]), quick=True)
     assert r["action"] == "목적지 접근" and not any("멀어지고" in x for x in r["say"]) and "trend" not in r
+
+
+# ---------------------------------------------------------------- 2026-11-23 엘리베이터 안·밖 (판 6)
+def test_closed_doors_after_inside_stay_inside():
+    """시험 1: 칸 안에서 닫힌 문을 본 사진이 elev_hall로 읽혀 잘못 내림 → 직전까지 안이면 닫힌 문만 보이는 장면(cd)은 안."""
+    nav = live_nav()
+    cd = dict(O(place="elev_hall"), closed_doors=True)
+    recs = steps(nav, RIDE + [cd] * 6 + HALLS)
+    assert not any(r.get("auto_exit") for r in recs[:-1]) and recs[-1].get("auto_exit")
+    assert any("계속 안으로 봄" in e for r in recs for e in r["events"])
+    # 밖에서 기다리며 본 닫힌 문(탄 적 없음)은 안으로 보지 않음
+    nav = live_nav()
+    recs = steps(nav, [cd] * 4 + HALLS)
+    assert nav.st["elev_in"] is False and not any(r.get("auto_exit") for r in recs)
+
+
+def test_floor_button_panel_is_inside():
+    nav = live_nav()
+    panel = dict(O(place="elev_hall"), elev={"seen": False, "cand": False, "why": "panel", "side": "R", "m": 0.5, "btn": "none"})
+    recs = steps(nav, RIDE + [dict(panel, closed_doors=False, panel=True)] * 3 + HALLS)
+    assert recs[-1].get("auto_exit") and not any(r.get("auto_exit") for r in recs[:-1])
+    nav = live_nav()  # 타기 전 패널(잘못 봄)은 '탔음'이 아님
+    recs = steps(nav, [dict(panel, panel=True)] * 3 + HALLS)
+    assert nav.st["elev_in"] is False
+
+
+def test_close_elevator_doors_after_boarding_stay_inside():
+    """시험 1·11-19: 칸 안에서 닫힌 문(1~2m)을 elev_hall로 읽어도 탄 뒤에는 안으로. 2m보다 멀거나 문이 없으면 밖."""
+    nav = live_nav()
+    door = dict(O(place="elev_hall"), elev={"seen": False, "cand": True, "why": "doors", "side": "C", "m": 1.0, "btn": "none"})
+    far = dict(O(place="lobby"))
+    recs = steps(nav, RIDE + [door] * 8 + [far] * 3)
+    assert not any(r.get("auto_exit") for r in recs[:-1]) and recs[-1].get("auto_exit")
+
+
+def test_exit_needs_steps_when_step_counter_works():
+    """걸음 수가 들어오는 세션: 밖 장면 3장이어도 3걸음 이상 걸어야 내림. 걸음 수가 늘 0(센서 꺼짐)이면 장면만."""
+    nav = live_nav()
+    out = []
+    for i, (ob, st_n) in enumerate(zip(RIDE + HALLS + [O(), O()], [5, 5, 5, 5, 6, 6, 7, 9])):
+        o = {"key": "f.jpg", "keys": ["f.jpg"], "pick_seconds": 0, "obs": ob, "cached": False, "call": {"seconds": 1.0}}
+        out.append(nav.step(t=1.5 * i, observed=o, rechecked=(None, None, None), steps=st_n))
+    assert not any(r.get("auto_exit") for r in out[:7])     # 밖 3장·4장째까지 1~2걸음
+    assert out[7]["auto_exit"]["walked"] == 4                # 밖 5장째, 첫 밖 사진(5걸음)부터 4걸음
+    nav = live_nav()
+    recs = []
+    for i, ob in enumerate(RIDE + HALLS):
+        o = {"key": "f.jpg", "keys": ["f.jpg"], "pick_seconds": 0, "obs": ob, "cached": False, "call": {"seconds": 1.0}}
+        recs.append(nav.step(t=1.5 * i, observed=o, rechecked=(None, None, None), steps=0))
+    assert recs[-1]["auto_exit"]["walked"] is None
+
+
+def test_auto_exit_scan_starts_when_exit_is_known():
+    """자동 하차는 첫 밖 사진보다 늦게 알게 되므로, 둘러보기 6초는 내림을 안 때부터 (내림 문장과 방향 문장이 한꺼번에 나오지 않게)."""
+    nav = live_nav()
+    door = dict(O(place="elev_hall"), elev={"seen": False, "cand": True, "why": "doors", "side": "C", "m": 1.0, "btn": "none"})
+    recs = steps(nav, RIDE + [door] * 2 + [O(place="lobby")] + [O(place="lobby")] * 2, dt=3.0)
+    r = recs[-1]
+    assert r.get("auto_exit") and r["say"] == [EXIT_SAY] and "direction" not in r
+    assert r["state"]["scan"]["t"] == r["t"] and nav.seg_start < r["t"]
