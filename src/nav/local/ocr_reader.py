@@ -12,6 +12,15 @@ DET = {"m": "PP-OCRv5_mobile_det", "s": "PP-OCRv5_server_det"}
 PREDICT_ONLY = {"text_det_max_side_limit"}  # 생성자에서 안 받고 predict()에서만 받는 인자
 
 
+
+def _paddle_device():
+    """서버(CUDA)는 gpu:0, Mac은 cpu."""
+    try:
+        import paddle
+        return "gpu:0" if paddle.device.is_compiled_with_cuda() else "cpu"
+    except Exception:  # noqa: BLE001
+        return "cpu"
+
 def load_ocr(det, extra):
     extra = {k: v for k, v in extra.items() if k not in PREDICT_ONLY}
     os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
@@ -24,7 +33,7 @@ def load_ocr(det, extra):
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
-        device="gpu:0",
+        device=_paddle_device(),
         **extra,
     )
 

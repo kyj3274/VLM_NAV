@@ -5,6 +5,7 @@ VLM은 부르지 않는다(주소를 비워 실패하게 둠). 결과: 세션마
   목적지를 붙이면(예: 20261116_075501_314:318) 그 목적지로 바꿔 다시 돌린다
 """
 import json
+import os
 import sys
 import types
 from collections import defaultdict
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # 로컬 버전 모듈
 
 import navigator as vt
 
-S = Path("/workspace/capstone/outputs/kyj/web_sessions")
+S = Path(os.environ.get("NAV_SESSIONS", "/workspace/capstone/outputs/kyj/web_sessions"))  # Mac에서는 받아 둔 기록 폴더
 
 
 def obs_rooms(rec):

@@ -36,6 +36,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))  # 공통 모듈 (src/nav/core)
 import depth  # noqa: E402
+from arrival import TargetTracker  # noqa: E402
 import nav_memory
 import ocr_reader
 import perception
@@ -51,11 +52,6 @@ BLUR_TH = 30
 RECHECK_SIDE = 1280  # 애매해서 다시 보는 장은 긴 변 1280(보통 화질)으로 줄여 읽음. 대표 1장만 원래 크기 (1080 세션 1초 2.0초 → 줄이려고)
 EL_DOOR = 0.5  # Places365 elevator/door 확률이 이 이상이면 엘리베이터 문 장면 (세 영상: 진짜 12초 중 7초, 헛것 73초 중 3초. YOLOE는 헛것 38초)
 VOTE_SCORE, VOTE_NEAR, VOTE_NEAR_SCORE = 0.95, 10, 0.8  # situ 문패 다수결: 크고(NEAR_H) 점수 0.95 이상이거나, 이미 인정한 같은 층 번호와 10 이내(점수 0.8 이상)면 바로 인정. 아니면 최근 3걸음 중 2번
-NOT_FOUND = 40   # situ: '근처'라고 한 뒤 이 초 동안 목적지 문패가 안 보이면 못 찾았다고 알림 (11/20 105호처럼 없는 방)
-WALK_MPS = 0.8   # situ: 센서가 없을 때 걷는 속도 가정 (m/s)
-STEP_M = 0.6     # situ: 걸음 하나 거리 (휴대폰 걸음 수가 있을 때)
-CONFIRM_AT = 1.5 # situ: 목적지까지 남은 거리(추정)가 이 안이면 멈추고 옆을 비춰 확인하게 함
-ASK_WAIT = 8     # situ: 옆을 비춰 달라고 한 뒤 이 초 안에 문패가 안 읽히면 '가능성 높음'으로 알림
 TURN_REPEAT = 8  # situ: '뒤로 돌아 주세요'를 다시 말하기 전 최소 간격(초). 돌 시간을 주고, 그사이 문패로 돌았는지 판단
 QUIET_SAY = 10  # situ: 이 초 동안 새 안내가 없으면 "계속 직진"을 말함 (말하지 않는 VLM 추천 대신)
 LOCATE_SEC = 5  # 경로 시작: 이 시간 동안 위치(층·장소)를 먼저 파악하고 말한 뒤 다음 행동을 안내 (그동안 엘리베이터 안내는 막음)
@@ -310,11 +306,12 @@ class Navigator:
         self.st = {"floor": None, "room": None, "since": 0, "scene": None, "wrong_floor": False, "arrived": False,
                    "floor_rooms": [], "last_vlm": -99, "target_d": None, "elevator_said": False, "trend_said": None,
                    "dir_said": None, "dir_since": -1, "dir_rooms": [], "dir_kind": None,
-                   "near_since": None, "notfound_said": False, "tgt_mem": None, "tgt_ask": None, "tgt_done": False,
+                   
                    "el_run": 0, "pending": None, "near_d": [], "el_ready": None, "button": None, "quiet": 0,
                    "loc": None, "assume1": False, "room_hist": [], "ok_rooms": []}  # assume1: situ 경로 시작은 1층으로 가정 (문패를 읽으면 문패가 우선)  # 경로 시작 위치 파악 중이면 {"until", "asks", "places"(초마다 Places365 묶음), "vlm_scene", "path"}
         self.records, self.clock = [], 0
         self.mem = nav_memory.Memory(target, NEAR_H)  # 시간 순서 기억 (situ에서 문패 확정·사건 기록에 씀)
+        self.arrival = TargetTracker(target, lambda text: self.mem.event(self.clock, text))  # 도착 추정 (core/arrival.py)
         self.mem.event(0, f"안내 시작 (목적지 {target}호)")
         self.events = [f"경로 시작 (목적지 {target}호 안내 시작)"]
         self.si, self.sec, self.seq, self.seg_start = 0, 0, "", 0
@@ -365,8 +362,7 @@ class Navigator:
             self.turn_reset()
         elif kind == "근처" and st["dir_said"] != "근처":
             out.append(f"{target}호 근처입니다. 문패를 확인하며 천천히 가세요.")
-            if st["near_since"] is None:
-                st["near_since"] = self.t_now()
+            self.arrival.near(self.t_now())
         if out:
             self.mem.event(self.clock, f"방향 판단: {kind} ({d['why']})")
             if kind != "뒤쪽":  # 뒤쪽은 turn_reset이 dir_said를 '돌기'로 둠 → 돈 뒤 다시 뒤쪽이면 또 말함
@@ -377,32 +373,9 @@ class Navigator:
         """지금 시각(초). 웹은 실제 시각, 영상·재생은 걸음(1초 구간) 수."""
         return self.now if getattr(self, "now", None) is not None else float(self.clock)
 
-    def walked(self, mem):
-        """목적지를 본 뒤 걸은 거리(m) 추정: 휴대폰 걸음 수가 있으면 그것, 없으면 시간 × 걷는 속도."""
-        steps = (self.sensor or {}).get("steps")
-        if steps is not None and mem.get("steps") is not None:
-            return (steps - mem["steps"]) * STEP_M
-        return (self.t_now() - mem["t"]) * WALK_MPS
-
     def target_unseen(self, target):
-        """목적지 문패가 이번 걸음에 안 보일 때. 문패가 계속 보이지 않아도 도착 근처를 알려 줌."""
-        st, out, now = self.st, [], self.t_now()
-        mem = st["tgt_mem"]
-        if mem is not None and not st["tgt_done"]:
-            left = mem["d"] - self.walked(mem)
-            side = mem["side"] or "옆"
-            if st["tgt_ask"] is None and left <= CONFIRM_AT:
-                out.append(f"멈춰 주세요. {target}호 문이 {side}에 있을 것 같습니다. 휴대폰을 {side}으로 천천히 돌려 문패를 비춰 주세요.")
-                st["tgt_ask"] = now
-                self.mem.event(self.clock, f"목적지 위치 추정: {mem['d']:.1f}m에서 본 뒤 약 {mem['d'] - left:.1f}m 걸음 → 확인 요청")
-            elif st["tgt_ask"] is not None and now - st["tgt_ask"] >= ASK_WAIT:
-                out.append(f"{target}호 문패를 확인하지 못했습니다. {side} 바로 앞의 문이 {target}호일 가능성이 높습니다.")
-                st["tgt_done"] = True
-        elif mem is None and st["near_since"] is not None and not st["notfound_said"] and now - st["near_since"] >= NOT_FOUND:
-            out.append(f"{target}호 문패를 아직 찾지 못했습니다. 이 근처에 없을 수도 있습니다. "
-                       "양쪽 벽을 천천히 비춰 보시거나 주변 분께 물어봐 주세요.")
-            st["notfound_said"] = True
-        return out
+        """목적지 문패가 이번 걸음에 안 보일 때 (공통 판단 core/arrival.py)."""
+        return self.arrival.unseen(self.t_now(), (self.sensor or {}).get("steps"))
 
     def turn_reset(self):
         """뒤로 돌라고 안내한 뒤: 이 걸음까지 본 문패는 반대 방향 기록이므로 다음 걸음부터 본 문패로 다시 판단."""
@@ -463,9 +436,10 @@ class Navigator:
         self.seq, self.sec, self.seg_start = seq, 0, self.clock
         if self.si > 0:
             self.events = self.events[:1] + ["엘리베이터를 타고 이동한 뒤 내림 (누른 층은 확인되지 않음)"]
-            self.st.update(floor=None, wrong_floor=False, room=None, since=0, floor_rooms=[], scene=None, target_d=None, trend_said=None, dir_said=None, dir_since=-1, dir_rooms=[], dir_kind=None, near_since=None, notfound_said=False, tgt_mem=None, tgt_ask=None, tgt_done=False,
+            self.st.update(floor=None, wrong_floor=False, room=None, since=0, floor_rooms=[], scene=None, target_d=None, trend_said=None, dir_said=None, dir_since=-1, dir_rooms=[], dir_kind=None,
                            pending=None, near_d=[], el_ready=None, button=None, quiet=0, elevator_said=False, el_run=0, assume1=False,
                            room_hist=[], ok_rooms=[])
+            self.arrival.reset()
 
     def step(self, frames):
         """frames: 1초 구간의 사진 파일 경로들 (첫 장이 대표). 반환: 이 초의 기록."""
@@ -672,9 +646,8 @@ class Navigator:
                 if mode == "situ" and dd is not None:  # 깊이로 잰 문패까지 거리 (문 상자가 없어도 됨)  # 문패는 문 위쪽 벽에 있어 깊이 거리가 조금 길게 나옴 → 둘 중 짧은 쪽
                     d, how = (dd, "깊이") if d is None else (min(d, dd), "문 높이·깊이")
                 side = SIDE(plate["cx"]) if plate else ""
-                if d is not None:  # 목적지 위치 기억: 이 거리·방향에서 봤음 (문패가 안 보여도 남은 거리를 추정)
-                    st["tgt_mem"] = {"t": self.t_now(), "steps": (self.sensor or {}).get("steps"), "d": d, "side": side}
-                if d is not None and d <= (2.5 if st["tgt_ask"] is not None else 2.0):  # 옆을 비춰 확인 중이면 조금 넉넉히
+                self.arrival.seen(self.t_now(), d, side, (self.sensor or {}).get("steps"))  # 목적지 위치 기억 (core/arrival.py)
+                if d is not None and d <= self.arrival.arrive_m():  # 옆을 비춰 확인 중이면 조금 넉넉히
                     say.append(f"도착했습니다. {side}의 문이 {target}호입니다.")
                     st["arrived"] = True
                 elif st["target_d"] is None or (d and st["target_d"] - d >= 2):

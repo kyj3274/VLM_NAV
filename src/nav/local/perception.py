@@ -39,6 +39,20 @@ HANGUL = re.compile(r"[가-힣]")
 TOILET = re.compile(r"(TOILET|화장실|RESTROOM)", re.IGNORECASE)
 
 
+
+def _torch_device():
+    """서버는 CUDA 0, Mac은 mps."""
+    import torch
+    return 0 if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+def _paddle_device():
+    try:
+        import paddle
+        return "gpu:0" if paddle.device.is_compiled_with_cuda() else "cpu"
+    except Exception:  # noqa: BLE001
+        return "cpu"
+
 def clock(center_x):
     return "11시" if center_x < 1 / 3 else "12시" if center_x < 2 / 3 else "1시"
 
@@ -74,12 +88,12 @@ def load_ocr():
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
-        device="gpu:0",
+        device=_paddle_device(),
     )
 
 
 def detect(model, image):
-    result = model.predict(image, imgsz=YOLOE_SIZE, conf=0.05, device=0, verbose=False)[0]
+    result = model.predict(image, imgsz=YOLOE_SIZE, conf=0.05, device=_torch_device(), verbose=False)[0]
     names = list(PHRASES)
     width, height = image.size
     return [
