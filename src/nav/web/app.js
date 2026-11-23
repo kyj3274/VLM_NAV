@@ -24,7 +24,7 @@ const S = {
   // 2026-11-23 판단 시간 줄이기: JPEG 품질 0.7(해상도 그대로), 선명도 sharpMin 이상이면 구간 시작 minSendMs 뒤 바로 보냄
   //   sharpMin 320 = 지난 휴대폰 시험에서 문패 번호가 읽힌 사진 17장의 최솟값(327) 바로 아래 (같은 계산, 160px 흑백 라플라시안 분산)
   // 빠른 확인: 응답에 confirm이 오면 quickGapMs 간격으로 선명한 2장을 찍어 동시에 보냄 (한 장당 최대 quickWaitMs 기다림)
-  jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false,
+  jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false, quickSpeechWaitMs: 1000, sayStartAt: -1,
 };
 
 // 휴대폰 쪽 기록 (2026-11-23 시험 전 보강): 응답 받은 시각, 음성 시작·끝, 네트워크 오류를 모아 3초마다 서버로 보냄
@@ -68,7 +68,7 @@ function say(text, opts = {}) {
   u.lang = 'ko-KR';
   if (S.voice) u.voice = S.voice;
   const src = opts.src || 'local';
-  u.onstart = () => { showCaption(text, opts.err); clog('say_start', { text, src, seq: opts.seq ?? null }); };
+  u.onstart = () => { S.sayStartAt = now(); showCaption(text, opts.err); clog('say_start', { text, src, seq: opts.seq ?? null }); };
   u.onend = () => { if (opts.priority) S.priorityActive = false; clog('say_end', { text, src, seq: opts.seq ?? null }); };
   u.onerror = (ev) => { if (opts.priority) S.priorityActive = false; clog('say_error', { text, src, error: ev && ev.error }); };
   if (opts.priority) S.priorityActive = true;
@@ -541,10 +541,13 @@ async function sharpShot(notBefore) {   // notBefore 뒤에 선명도 기준 이
   }
   return null;
 }
-async function quickConfirm() {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
+async function quickConfirm(tReply) {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
   if (S.quickBusy || !$('quickconf').checked) return;
   S.quickBusy = true;
   try {
+    // "잠시 멈춰 주세요" 음성이 시작된 뒤에 찍는다 (최대 quickSpeechWaitMs). 2026-11-23 시험 1: 음성보다 0.3초 먼저 찍었음
+    while (S.running && !(S.sayStartAt >= tReply) && now() - tReply < S.quickSpeechWaitMs) await sleep(30);
+    clog('quick_start', { waited_ms: Math.round(now() - tReply), speech: S.sayStartAt >= tReply });
     const a = await sharpShot(now());
     const b = a ? await sharpShot(now() + S.quickGapMs) : null;
     if (a && b && S.running) { sendFrame(a, 'confirm'); sendFrame(b, 'confirm'); }
@@ -606,7 +609,7 @@ function onFrameReply(r) {
       }
       if (newer) S.lastAction = r.action;
       if (r.arrived && newer) stopAfterArrival();
-      else if (r.confirm && newer && S.running) quickConfirm();
+      else if (r.confirm && newer && S.running) quickConfirm(now());
       break;
     }
     case 'limit': case 'stopped':

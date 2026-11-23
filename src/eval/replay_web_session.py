@@ -77,7 +77,27 @@ def load(d):
     start = next(x for x in lines if x.get("event") == "start")
     steps = [x for x in lines if "event" not in x]
     stale = [x for x in lines if x.get("event") == "stale"]
+    # 2026-11-23 기록 보강 뒤: 버린 사진(stale·dropped)도 인식 결과·시각이 남음 → 다시 넣을 수 있음
+    for x in lines:
+        if x.get("event") in ("stale", "dropped") and x.get("obs") and x.get("timing") and x.get("frame"):
+            steps.append({**x, "recheck": next(({"asked": k.get("asked"), "read": _rc_read(k)} for k in x.get("calls_log", [])
+                                                if k.get("kind") == "recheck"), None), "logged_stale": True})
     return start, steps, stale
+
+
+def _rc_read(call):
+    try:
+        return (json.loads(call.get("raw_text") or "{}").get("n") or None)
+    except ValueError:
+        return None
+
+
+def done_at(r):
+    """사진을 찍은 휴대폰 시각 기준으로 인식이 끝난 때. 새 기록(timing·epoch)이면 실제 값, 아니면 lag − server."""
+    tm, cl = r.get("timing"), r.get("client") or {}
+    if tm and cl.get("shot_epoch") and tm.get("recv_epoch") is not None:
+        return r["t"] + (tm["recv_epoch"] - cl["shot_epoch"]) + (tm["see_end_s"] - tm["recv_s"])
+    return r["t"] + (r["lag_s"] - r["server_s"]) + r["see_s"]
 
 
 def sharpness(path):
@@ -98,14 +118,19 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
     d = Path(d)
     # 기록에 남은 프레임: 반영된 것 + 버려진 것(stale, obs가 없어 다시 넣을 수 없음 → 같은 시각에 버린 것으로 둠)
     rechecks, rc_secs = {}, []
+    logged_quick = any(r.get("quick") for r in steps)  # 휴대폰이 실제로 찍은 빠른 확인 사진이 기록에 있음 → 흉내 내지 않음
     for r in steps:
         if r.get("recheck"):
-            sec = max(0.0, r["latency_seconds"] - r["see_s"])
+            sec = max(0.0, r.get("latency_seconds", r.get("see_s", 0)) - r.get("see_s", 0)) if not r.get("logged_stale") else \
+                sum(k["end_s"] - k["start_s"] for k in r["calls_log"] if k.get("kind") == "recheck")
             rechecks[(r["frame"], r["recheck"]["asked"])] = {"read": r["recheck"]["read"], "sec": sec}
             rc_secs.append(sec)
     rc_default = statistics.median(rc_secs) if rc_secs else 1.5
     ups = [r["lag_s"] - r["server_s"] for r in steps if r.get("lag_s") is not None]
     up_med = statistics.median(ups)
+    for r in steps:
+        if r.get("logged_stale"):
+            r.setdefault("see_s", r["timing"]["see_end_s"] - r["timing"]["see_start_s"])
     see_med = statistics.median(r["see_s"] for r in steps)
     qcall = quick_call if quick_call is not None else see_med
     runner = LogRunner(rechecks, rc_default) if not reperceive else PerceiveRunner(reperceive == "live", limit)
@@ -126,21 +151,21 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
     # 사건 큐: (인식 끝난 시각, 받은 순서 seq, 종류, 자료)
     heap, seq = [], 0
     for r in steps:
-        recv = r["t"] + (r["lag_s"] - r["server_s"])
+        recv = done_at(r) - r["see_s"]
         cl = r.get("client") or {}
         if early_send and cl.get("pick_end") is not None and sharpness(d / "frames" / r["frame"]) >= SHARP_MIN:
             # 일찍 보내기 (2026-11-23, 추정): 선명도 기준 이상인 사진은 구간 끝(pick_end)까지 기다리지 않고 보냄
             recv -= max(0.0, cl["pick_end"] - r["t"])
             r = {**r, "early": True}
         seq_r = r["web_seq"]
-        heapq.heappush(heap, (recv + r["see_s"], seq_r, "frame", r))
+        heapq.heappush(heap, (recv + r["see_s"], seq_r, "quick" if r.get("quick") else "frame", r))
     for s in stale:  # 원래 버려진 프레임: 인식 결과가 기록에 없음 → 다시 넣지 않음
         pass
     lock_free, last_applied, out, quick_n = 0.0, 0, [], 0
     by_t = sorted(steps, key=lambda r: r["t"])
     while heap:
         done, sq, kind, r = heapq.heappop(heap)
-        if sq <= last_applied:
+        if sq <= last_applied and kind != "quick":  # 빠른 확인 사진은 버리지 않음 (서버와 같게, 2026-11-23)
             out.append({"kind": kind, "seq": sq, "stale": True, "t": r["t"]})
             continue
         begin = max(done, lock_free)
@@ -150,7 +175,7 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
              "call": {"seconds": r["see_s"], "credit": 0.0}}
         before = b_rec
         t_cap = max(r["t"], float(nav.clock) + 0.01) if nav.records else r["t"]
-        rec = nav.step(t=round(t_cap, 2), observed=o, quick=(kind == "quick")) if kind == "quick" else \
+        rec = nav.step(t=round(t_cap, 2), observed=o, quick=True, heading=r.get("heading")) if kind == "quick" else \
             nav.step(t=round(t_cap, 2), observed=o, heading=r.get("heading"))
         asked = runner.asked[before:]
         dur = sum(a["sec"] if "sec" in a else (rechecks.get((a["frame"], a["asked"])) or {"sec": rc_default})["sec"]
@@ -160,13 +185,16 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
             lock_free = begin
         else:
             lock_free = begin + dur
-        last_applied = sq
+        last_applied = max(last_applied, sq)
         row = {"kind": kind, "seq": sq, "t": r["t"], "frame": r["frame"], "resp": round(lock_free, 2),
                "say": rec["say"], "action": rec["action"], "arrived": rec["state"]["arrived"],
                "floor": rec["state"]["floor"], "recheck": [a["asked"] + ("(기록 없음)" if a["missing"] else "") for a in asked],
-               "confirm_now": bool(rec.get("confirm_now")), "logged_resp": round(r["t"] + r["lag_s"], 2) if kind == "frame" else None}
+               "confirm_now": bool(rec.get("confirm_now")),
+               "logged_resp": round(r["t"] + r["lag_s"], 2) if r.get("lag_s") is not None else None,
+               "direction": rec.get("direction"), "trend": rec.get("trend"), "events": rec.get("events"),
+               "obs_place": (r.get("obs") or {}).get("place"), "plates": [p["n"] for p in (r.get("obs") or {}).get("plates", [])]}
         out.append(row)
-        if rec.get("confirm_now") and hasattr(nv.Navigator, "quick_obs") and quick_on:
+        if rec.get("confirm_now") and hasattr(nv.Navigator, "quick_obs") and quick_on and not logged_quick:
             # 빠른 확인 (2026-11-23): 응답이 휴대폰에 닿은 뒤 QUICK_GAPS초에 2장. 사진 내용은 그 시각에 가장 가까운 기록 사진
             # (방아쇠 사진·서로 같은 사진 제외). 기록 사진 간격이 약 1.5초라 '근처' 사진이다.
             used = {r["frame"]}

@@ -368,7 +368,7 @@ def test_auto_exit_then_button_is_same_exit(tmp_path):
     assert ws.nav.si == 1 and ws.seg == 1  # 휴대폰 구간 번호와 맞추려고 seg는 올림
     r = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
                data={"t": "9.0", "heading": "90", "seg": "1"}).json()
-    assert r["say"] == ["410호는 오른쪽입니다. 오른쪽으로 가세요."] and r["direction"]["strength"] == "강"
+    assert r["say"] == ["410호는 오른쪽입니다. 오른쪽 복도로 천천히 직진하세요."] and r["direction"]["strength"] == "강"
     assert ws.nav.records[-1]["heading"] == 90.0
 
 
@@ -406,3 +406,24 @@ def test_session_log_has_everything_for_analysis(tmp_path):
     ev = next(x for x in lines if x.get("event") == "repeat")
     assert "epoch" in ev and "say" in ev
     assert any(x.get("event") == "start" for x in lines)
+
+
+def test_quick_photo_not_dropped_when_other_finishes_first(tmp_path):
+    """2026-11-23 두 시험: 빠른 확인 2장 중 먼저 보낸 장이 늦게 끝나면 버려져 2장 확인이 안 됐음 → 빠른 확인 사진은 버리지 않음."""
+    plate = {**BASE, "plates": [{"n": "410", "name": "", "m": 4.0, "on": "door", "box": [40, 30, 60, 40]}]}
+    near = {**BASE, "plates": [{"n": "410", "name": "", "m": 1.5, "on": "door", "box": [40, 30, 60, 40]}]}
+    factory = scripted_factory([plate, near, near], [0.0, 0.5, 0.0])
+    c, _ = app_with(tmp_path, factory=factory)
+    sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
+    r = frame(c, sid, 0.0)
+    assert r["confirm"]
+    out = {}
+    th = threading.Thread(target=lambda: out.__setitem__(1, quick(c, sid, 1.0)))
+    th.start()
+    time.sleep(0.1)
+    out[2] = quick(c, sid, 1.4)   # 늦게 보냈지만 먼저 끝남
+    th.join()
+    assert out[2]["status"] == "ok" and out[1]["status"] == "ok"   # 전에는 out[1]이 stale
+    ws = c.app.state.sessions[sid]
+    assert ws.counts["stale"] == 0 and sum(1 for x in ws.nav.records if x.get("quick")) == 2
+    assert ws.nav.st["quick"] is None  # 2장을 모두 세어 빠른 확인 한 번이 끝남

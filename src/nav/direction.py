@@ -18,6 +18,8 @@ REL_DEG = {"L": -90, "F": 0, "C": 0, "R": 90, "B": 180}
 WORD = {"F": "정면", "L": "왼쪽", "R": "오른쪽", "B": "뒤쪽"}
 GO = {"F": "앞으로 가세요.", "L": "왼쪽으로 가세요.", "R": "오른쪽으로 가세요.", "B": "뒤로 돌아가세요."}
 TURN = {"F": "", "L": "왼쪽으로 돌아 ", "R": "오른쪽으로 돌아 ", "B": "뒤로 돌아 "}
+MOVE = {"F": "앞으로 천천히 직진하세요.", "L": "왼쪽 복도로 천천히 직진하세요.", "R": "오른쪽 복도로 천천히 직진하세요.",
+        "B": "뒤로 돌아 천천히 직진하세요."}
 ACT = {"F": "직진", "L": "왼쪽", "R": "오른쪽", "B": "뒤로 돌기"}
 STRONG, MEDIUM, WEAK, NONE = 3, 2, 1, 0
 STRENGTH_KO = {STRONG: "강", MEDIUM: "보통", WEAK: "약", NONE: "없음"}
@@ -112,16 +114,18 @@ def wall_votes(reads, target):
 
 
 def sentence(target, rel, strength, long_way=False, floor_known=True):
-    """floor_known=False: 아직 층을 모름 (근거가 약하면 '층과 방향을 확인하겠습니다')."""
+    """방향을 정하면 늘 행동 안내를 붙인다 (2026-11-23 사용자 지시). 근거가 강하지 않으면 '가능성'을 붙인다.
+    floor_known=False: 아직 층을 모름 ('문패로 층과 방향을 확인하겠습니다')."""
     w = WORD[rel]
-    if strength >= STRONG:
-        return f"{target}호는 {w}입니다. {GO[rel]}"
-    if strength == MEDIUM:
-        return f"{target}호는 {w}일 가능성이 높습니다. {TURN[rel]}천천히 가면서 문패로 확인하겠습니다."
+    go = MOVE[rel]
     what = "방향을" if floor_known else "층과 방향을"
+    if strength >= STRONG:
+        return f"{target}호는 {w}입니다. {go}"
+    if strength == MEDIUM:
+        return f"{target}호는 {w}일 가능성이 높습니다. {go} 문패로 확인하겠습니다."
     if strength == WEAK:
-        return f"{target}호는 {w}일 수 있습니다. {TURN[rel]}천천히 가면서 문패로 {what} 확인하겠습니다."
+        return f"{target}호는 {w}일 가능성이 있습니다. {go} 문패로 {what} 확인하겠습니다."
     if long_way:
         where = {"F": "앞쪽", "L": "왼쪽", "R": "오른쪽", "B": "뒤쪽"}[rel]
-        return f"복도가 길게 보이는 {where}으로 천천히 가세요. 문패로 {what} 확인하겠습니다."
-    return f"앞으로 천천히 가세요. 문패로 {what} 확인하겠습니다."
+        return f"복도가 길게 보이는 {where} 복도로 천천히 직진하세요. 문패로 {what} 확인하겠습니다."
+    return f"앞으로 천천히 직진하세요. 문패로 {what} 확인하겠습니다."

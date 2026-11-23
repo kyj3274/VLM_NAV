@@ -464,7 +464,9 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                     sync_credit(ws)
                     ws.log({"event": "dropped", "why": "처리 중 내림", **base_log, "obs": r.get("obs")})
                     return old_segment(ws, seq, seg_at, t_cap, "처리 중 내림")
-                if seq <= ws.last_applied or ws.stopped:  # 더 나중에 보낸 결과를 이미 넣었음
+                # 더 나중에 보낸 결과를 이미 넣었음. 빠른 확인 사진은 버리지 않는다 (2026-11-23 두 시험 모두 2장 중 1장이
+                # 같이 보낸 다른 장보다 늦게 끝나 버려져 '서로 다른 사진 2장' 확인이 안 됨). 문패 읽기만 더하므로 순서가 바뀌어도 됨
+                if (seq <= ws.last_applied and not quick) or ws.stopped:
                     ws.counts["stale"] += 1
                     sync_credit(ws)
                     ws.log({"event": "stale", "after": ws.last_applied, "credit": r["call"].get("credit"),
@@ -477,7 +479,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 except CreditLimit as e:  # 확대 재확인에서 한도
                     sync_credit(ws)
                     return stop(ws, str(e))
-                ws.last_applied = seq
+                ws.last_applied = max(ws.last_applied, seq)
                 now = time.monotonic()
                 ws.applied_at.append(now)
                 ws.counts["applied"] += 1

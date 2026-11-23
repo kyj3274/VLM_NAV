@@ -65,6 +65,7 @@ QUICK_SAY = "목적지 같습니다. 잠시 멈춰 주세요."
 ASK_FLOOR_SEC = 15    # 구간 시작 뒤 이 초가 지나도 층을 모르면 "지금 몇 층인지 말씀해 주세요"
 ASK_FLOOR_EVERY = 20  # 같은 질문은 이 초에 한 번까지
 CHECK_SAY = "지금 층을 확인하고 있습니다. 휴대폰을 천천히 좌우로 비춰 주세요."
+QUIET_GOAL = "복도를 따라 천천히 직진하세요. 문패를 확인하고 있습니다."  # 목적지 층 무안내 10초 (행동이 든 문장)
 ASK_SAY = "지금 몇 층인지 말씀해 주세요."
 FLOOR_MOVE_HOLD = 20  # '층 이동 가능'(계단·다른 층 표시)은 계단을 벗어나고 마지막 계단 단서 뒤 이 초가 지나면 끈다
                       # (PR #1 리뷰 1: 켜진 채로 남아 오독 한 번에 층이 바뀜. 2026-11-19 계단 시험에서 마지막 계단 장면 45.8초 →
@@ -199,6 +200,8 @@ class Navigator:
         floor = st["floor"]
         st["wrong_floor"] = bool(tf) and floor != tf
         if not st["wrong_floor"]:
+            if self.can_goal_scan():  # 목적지 층에서 시작·층을 앎: 내렸을 때와 같은 방향 정하기 (2026-11-23 시험 2)
+                return [head + ("목적지 층입니다. " if tf else "") + self.goal_scan()]
             st["act"] = "직진"
             return [head + ("목적지 층입니다. " if tf else "") + "앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
         if self.si > 0:
@@ -206,6 +209,24 @@ class Navigator:
             return [head + f"{target}호는 {tf}층에 있습니다. 엘리베이터로 돌아가 {tf}층을 누르세요."]
         st["act"] = "직진"
         return [head + f"{target}호는 {tf}층에 있습니다. 엘리베이터를 찾아 {tf}층으로 가겠습니다. 앞으로 천천히 직진해 주세요."]
+
+    def can_goal_scan(self, rooms=()):
+        """목적지 층에서 방향 정하기(둘러보기)를 새로 시작할 수 있나: 호실 목적지, 이 구간에 둘러보기가 없었음,
+        도착 전, 목적지 문패를 이미 보고 있지 않음."""
+        st = self.st
+        return (bool(ROOM.match(self.target)) and st["scan"] is None and not st["arrived"]
+                and self.target not in rooms and st["target_seen"] is None)
+
+    def new_scan(self, start):
+        return {"t": start, "until": start + SCAN_SEC, "reads": [], "evs": [], "lw": [], "done": False, "why": None}
+
+    def goal_scan(self):
+        """목적지 층임을 알았을 때(시작 층이 목적지 층): 엘리베이터에서 내렸을 때와 같은 둘러보기 시작 (2026-11-23 사용자 지시).
+        반환: '○호를 찾겠습니다. 잠시 멈춰서 …' 문장 뒷부분."""
+        st = self.st
+        st["scan"], st["act"] = self.new_scan(self.clock), "멈추고 둘러보기"
+        self.mem.event(self.clock, "목적지 층: 방향을 정하려고 둘러보기 시작")
+        return f"{self.target}호를 찾겠습니다. {EXIT_SAY}"
 
     def set_floor(self, floor, source="말"):
         """사용자가 말한 지금 층("여기 4층이야"). 문패와 같은 근거: 바로 층을 정하고, 그 뒤 다른 층 문패가
@@ -247,8 +268,7 @@ class Navigator:
                            el_passed=False, stair=new_stair(), floor_temp=src == "엘리베이터 표시창",
                            floor_src=src, ask_t=None, check_t=None, el_disp=None,
                            elev_run=0, elev_in=False, hall_run=0, exit_cand=None, dir=None, far={},
-                           scan={"t": self.seg_start, "until": self.seg_start + SCAN_SEC, "reads": [], "evs": [],
-                                 "lw": [], "done": False, "why": None})
+                           scan=self.new_scan(self.seg_start))
             if carry and src == "엘리베이터 표시창":
                 self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
             elif carry:
@@ -665,7 +685,9 @@ class Navigator:
                 places = Counter(p for p in loc["places"] if p and p != "unknown")
                 place = cp.PLACE_KO.get(places.most_common(1)[0][0]) if places else None
                 head = f"지금 위치는 {floor}층" + (f" {place}" if place else "") + f"입니다. {where}"
-                if floor == tf or not tf:
+                if (floor == tf or not tf) and self.can_goal_scan(floor_rooms):
+                    say.append(head + self.goal_scan())
+                elif floor == tf or not tf:
                     say.append(head + "목적지 층입니다. 앞으로 천천히 직진해 주세요. 문패를 확인하며 안내하겠습니다.")
                     st["act"] = "직진"
                 else:
@@ -675,11 +697,14 @@ class Navigator:
                     st["act"] = "직진"
             elif st["floor"] is None:
                 st["floor"] = floor
-                if floor == tf or not tf:
+                if (floor == tf or not tf) and not el_busy and self.can_goal_scan(floor_rooms):
+                    # 시작 층이 목적지 층 (2026-11-23 시험 2: "4층이 맞습니다" 뒤 행동 안내가 없었음)
+                    say.append(f"{floor}층입니다. {where}" + self.goal_scan())
+                elif floor == tf or not tf:
                     say.append(f"{floor}층이 맞습니다. {where}"
                                + ("엘리베이터를 탈 필요 없습니다. 복도를 따라 문패를 찾겠습니다." if el_busy else ""))
                     st.update(el_ready=None, elevator_said=False, el_approach=False)
-                    if st["act"] not in ("목적지 접근", "도착", "문 통과"):
+                    if st["act"] not in ("목적지 접근", "도착", "문 통과") and not self.scanning():
                         st["act"] = "직진"
                 else:
                     st["wrong_floor"] = True
@@ -699,7 +724,9 @@ class Navigator:
                     st.update(el_ready=None, elevator_said=False, el_approach=False)
                 elif not st["wrong_floor"] and st["act"].startswith("계단"):
                     say.append("목적지 층입니다. 복도를 따라 문패를 찾겠습니다.")
-                if st["act"] not in ("목적지 접근", "도착") or st["wrong_floor"]:
+                elif not st["wrong_floor"] and ROOM.match(target) and self.can_goal_scan(floor_rooms):
+                    say.append("목적지 층입니다. " + self.goal_scan())
+                if (st["act"] not in ("목적지 접근", "도착") and not self.scanning()) or st["wrong_floor"]:
                     st["act"] = ("엘리베이터로 돌아가기" if si > 0 else "직진") if st["wrong_floor"] else "직진"
             if floor_rooms:
                 st["room"] = floor_rooms[0]
@@ -750,7 +777,9 @@ class Navigator:
 
         # ---- 진행 방향: 확정한 가까운(TREND_M 이내) 문패 번호가 목적지 번호에 가까워지는가
         # 내린 직후 둘러보는 동안(B6)은 말하지 않고 방향 근거(보통)로만 모은다. 나침반이 있으면 몸을 돌리는 중이라 쓰지 않음.
-        if ROOM.match(target) and not st["wrong_floor"] and st["floor"] == tf:
+        # 빠른 확인 사진(멈춰서 가장 가까운 문패만 읽음, 맞은편 벽일 수 있음)은 진행 방향에 쓰지 않는다
+        # (2026-11-23 시험 2: 405 앞에서 멈춘 사진이 맞은편 408을 읽어 "멀어지고 있습니다. 뒤로 돌아가세요")
+        if ROOM.match(target) and not st["wrong_floor"] and st["floor"] == tf and not quick:
             # 목적지 문패 자신도 위치 표시(거리 0)로 넣는다: 목적지를 지나친 뒤 옆 번호가 보이면 '멀어짐'
             # (2026-11-17 410 경로: 410을 본 뒤 407→412에서 '방향이 맞습니다'라고 한 것을 고침)
             near = [x for x in floor_rooms if x in src and src[x]["m"] is not None and src[x]["m"] <= TREND_M
@@ -778,8 +807,11 @@ class Navigator:
                     say.append(f"{n0}호입니다. 목적지와 멀어지고 있습니다. 뒤로 돌아가세요.")
                     st["trend_said"], st["act"] = "away", "뒤로 돌기"
                     note["trend"] = f"{prev[0]}→{n0} 멀어짐"
-            # 먼 문패(목적지 ±3 밖) (B8d): 같은 쪽 벽 문패가 2번 연속 목적지에서 멀어지면 뒤로 (번호가 띄엄띄엄이라 한 번으로는 안 함)
-            if not scanning and not st["target_seen"]:
+            # 먼 문패(목적지 ±3 밖) (2026-11-23 사용자 지시): 같은 쪽 벽에서 확정한 문패 2개가 목적지 번호에
+            # 가까워지면 "방향이 맞습니다", 멀어지면 "뒤로 돌아가세요". ±3 안은 위 규칙.
+            # ±3 안 문패로 이미 방향을 판단했으면 먼 문패는 쓰지 않는다: 이 건물은 먼 번호가 띄엄띄엄이라
+            # (3층 왼쪽 벽 317, 316, 315, 307, 313) 318로 가는 경로 C에서 307→313을 '가까워짐'으로 잘못 말했음
+            if not scanning and not st["target_seen"] and not st["near_d"][1:]:
                 for x in floor_rooms:
                     if x not in src or abs(int(x) - int(target)) <= NEIGHBOR or src[x]["side"] not in ("L", "R"):
                         continue
@@ -787,12 +819,20 @@ class Navigator:
                     if lst and lst[-1][0] == x:
                         continue
                     d = abs(int(x) - int(target))
-                    run = (lst[-1][2] + 1 if d > lst[-1][1] else 0) if lst else 0
-                    lst.append([x, d, run])
-                    if run >= 2 and st["trend_said"] != "away":
+                    prev_far = lst[-1] if lst else None
+                    lst.append([x, d])
+                    if prev_far is None or d == prev_far[1]:
+                        continue
+                    pair = f"같은 쪽 벽 {prev_far[0]}→{x}"
+                    if d < prev_far[1] and st["trend_said"] != "toward":
+                        say.append(f"{x}호를 지나고 있습니다. 목적지 방향이 맞습니다. 계속 직진하세요.")
+                        st["trend_said"], st["act"] = "toward", "직진"
+                        note["trend"] = pair + " 가까워짐 (±3 밖)"
+                        break
+                    if d > prev_far[1] and st["trend_said"] != "away":
                         say.append(f"{x}호입니다. 목적지와 멀어지고 있습니다. 뒤로 돌아가세요.")
                         st["trend_said"], st["act"], st["far"] = "away", "뒤로 돌기", {}
-                        note["trend"] = "같은 쪽 벽 먼 문패 " + "→".join(y[0] for y in lst[-3:]) + " 멀어짐"
+                        note["trend"] = pair + " 멀어짐 (±3 밖)"
                         break
 
         # ---- 목적지
@@ -882,6 +922,12 @@ class Navigator:
 
         # ---- 내린 직후 둘러보기 끝, 방향 안내 (B6~B8)
         say.extend(self.direction_step(heading, clock, bool(tgt or maybe), note))
+        # ---- 목적지 층인데 둘러보기도 아니고 행동이 '멈추고 둘러보기'(=모름)로 남으면 직진 (2026-11-23 사용자 지시)
+        if (ROOM.match(target) and st["floor"] == tf and not st["wrong_floor"] and not st["arrived"]
+                and not self.scanning() and st["act"] in ("멈추고 둘러보기", "", None)):
+            st["act"] = "직진"
+            if not say:
+                say.append(QUIET_GOAL)
         # ---- 위치 파악 시간 끝
         if st["loc"] is not None and clock + 1 >= st["loc"]["until"] and not st["arrived"]:
             say.extend(self.locate_end(st["loc"]))
@@ -907,7 +953,7 @@ class Navigator:
     def collect_direction(self, obs, heading, clock, scanning):
         """방향 근거를 모은다. 안내판·화살표(강)는 구간 내내, 둘러보며 읽은 문패와 긴 복도 방향은 둘러보는 동안만."""
         st, target = self.st, self.target
-        if not ROOM.match(target) or st["arrived"] or self.si == 0 and not scanning:
+        if not ROOM.match(target) or st["arrived"] or st["scan"] is None:
             return
         sc = st["scan"]
         evs = []
@@ -1050,7 +1096,10 @@ class Navigator:
         if seeking and not st["elevator_said"]:
             return "엘리베이터를 찾고 있습니다. 천천히 직진하며 주변을 비춰 주세요."
         if floor and floor == tf:
-            return f"{floor}층 {place or ''}입니다. 문패를 찾고 있습니다.".replace("층 입니다", "층입니다")
+            # 목적지 층: 늘 행동이 들어간 문장 (2026-11-23 시험 2: "4층 복도입니다. 문패를 찾고 있습니다"만 되풀이)
+            if act not in ("직진", "왼쪽", "오른쪽"):
+                st["act"] = "직진"
+            return QUIET_GOAL
         return "계속 앞으로 천천히 가세요."
 
     def _finish(self, o, obs, rooms, say, note, latency, calls, error, recheck):
