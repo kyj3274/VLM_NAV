@@ -1,15 +1,15 @@
 #!/bin/bash
 # 실내 길안내 웹 켜기/끄기 (Mac에서 실행). 학교 서버의 web_server.py + Mac의 Cloudflare 임시 https 주소.
-#   bash src/nav/local/web_mac.sh start    # 서버 웹 켜기 → Mac으로 포트 연결 → https 주소 출력
-#   bash src/nav/local/web_mac.sh stop     # https 주소 끄기 + 서버 웹 끄기 (GPU 반납)
-#   bash src/nav/local/web_mac.sh status
-#   bash src/nav/local/web_mac.sh records           # 지난 안내 기록 목록
-#   bash src/nav/local/web_mac.sh record [세션]     # 기록을 웹 모양 다시보기로 만들어 Mac에서 열기 (세션 생략 = 가장 최근)
+#   bash src/nav/web_mac.sh local start    # 서버 웹 켜기 → Mac으로 포트 연결 → https 주소 출력
+#   bash src/nav/web_mac.sh local stop     # https 주소 끄기 + 서버 웹 끄기 (GPU 반납)
+#   bash src/nav/web_mac.sh local status
+#   bash src/nav/web_mac.sh local records           # 지난 안내 기록 목록
+#   bash src/nav/web_mac.sh local record [세션]     # 기록을 웹 모양 다시보기로 만들어 Mac에서 열기 (세션 생략 = 가장 최근)
 # 학교 서버 비밀번호를 물으면 입력. 웹 비밀번호는 서버 outputs/kyj/nav_web_password.
 # Mac이 잠자기에 들어가면 주소가 끊긴다. 주소는 켤 때마다 바뀐다.
 
 SOCK=/tmp/kyj-cnu.sock
-PORT=8765
+PORT=8766  # Claude 버전(Mac, 8765)과 같이 켤 수 있게 (2026-11-24)
 STATE="$HOME/.nav_web"
 mkdir -p "$STATE"
 REMOTE_LOG=/workspace/capstone/outputs/kyj/nav_web.log
