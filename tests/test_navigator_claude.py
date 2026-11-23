@@ -488,3 +488,30 @@ def test_clean_elevator_display():
     o = cp.clean({"plates": [], "fs": "", "ss": "", "place": "corridor", "door": "none", "el": [], "arrows": [], "ed": "4"})
     assert o["elev_floor"] is None
     assert cp.floor_of_display("B1") == "B1" and cp.floor_of_display("12F") == "12" and cp.floor_of_display("▲") is None
+
+
+# ---------------------------------------------------------------- 2026-11-23 (B) PR #1 리뷰
+def test_review1_same_floor_sign_does_not_arm_floor_move():
+    """4층에서 '4F'를 본 뒤 215 오독 한 번(읽기+재확인 일치로 확정)으로 층이 바뀌지 않는다."""
+    script = [O([("412", "C", 2.5, "door")]), O(floor_sign="4F"), O(), O([("215", "C", 2.5, "door")]), O()]
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    exited(nav)
+    recs = run(nav, 5)
+    assert recs[1]["state"]["floor"] == "4" and recs[1]["state"]["floor_move"] is None
+    assert "215" in nav.mem.confirmed()
+    assert recs[3]["state"]["floor"] == "4" and recs[4]["state"]["floor"] == "4"
+    assert "엘리베이터로 돌아가" not in says(recs)
+
+
+def test_review1_floor_move_expires_after_stairs():
+    """계단을 벗어나고 계단 단서 없이 FLOOR_MOVE_HOLD초가 지나면 '층 이동 가능'을 끈다 → 다른 층 문패는 다시 2번 연속."""
+    script = [O([("105", "C", 2.5, "door")]), O(place="stairs"), O()] + [O()] * nv.FLOOR_MOVE_HOLD + \
+             [O([("405", "L", 4.0, "door")]), O()]
+    nav = nv.Navigator(ScriptRunner(script), "110")
+    nav.new_segment("1")
+    recs = run(nav, len(script))
+    assert recs[1]["state"]["floor_move"]["why"] == "계단"
+    off = next(i for i, r in enumerate(recs) if i > 1 and r["state"]["floor_move"] is None)
+    assert recs[off]["t"] - recs[1]["t"] == nv.FLOOR_MOVE_HOLD
+    assert recs[-2]["state"]["floor"] == "1" and recs[-1]["state"]["floor"] == "1"
+    assert any("층 이동 가능 끔" in e["text"] for e in nav.mem.events)

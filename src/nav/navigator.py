@@ -60,6 +60,9 @@ ASK_FLOOR_SEC = 15    # 구간 시작 뒤 이 초가 지나도 층을 모르면 
 ASK_FLOOR_EVERY = 20  # 같은 질문은 이 초에 한 번까지
 CHECK_SAY = "지금 층을 확인하고 있습니다. 휴대폰을 천천히 좌우로 비춰 주세요."
 ASK_SAY = "지금 몇 층인지 말씀해 주세요."
+FLOOR_MOVE_HOLD = 20  # '층 이동 가능'(계단·다른 층 표시)은 계단을 벗어나고 마지막 계단 단서 뒤 이 초가 지나면 끈다
+                      # (PR #1 리뷰 1: 켜진 채로 남아 오독 한 번에 층이 바뀜. 2026-11-19 계단 시험에서 마지막 계단 장면 45.8초 →
+                      #  4층 첫 문패 62.7초로 약 17초 걸려서 20초. 그 안에 첫 문패를 못 읽어도 층 충돌 2번 연속 규칙으로 바뀜)
 EL_DISP_FRESH = 10    # 엘리베이터 안 층 표시창을 '내렸어요' 전 이 초 안에 읽었으면 내린 층의 임시 층으로 씀
 ACTIONS = ["문 통과", "직진", "왼쪽", "오른쪽", "뒤로 돌기", "엘리베이터 타기", "엘리베이터로 돌아가기",
            "멈추고 둘러보기", "목적지 접근", "도착",
@@ -290,10 +293,20 @@ class Navigator:
         # ---- 층 이동 가능 (2026-11-19 사용자 지시 2: 계단으로 층을 옮긴 경우)
         # 계단 장면이거나 층 표시가 보이면 표시해 두고, 그 뒤 다른 층 문패·층 표시가 또렷하면(확정 문패, 읽힌 층 표시)
         # 2번 연속을 기다리지 않고 바로 층을 바꾼다. 층이 바뀌면 지운다.
-        if (obs["place"] == "stairs" or obs["floor"]) and not st["floor_move"]:
-            why = "계단" if obs["place"] == "stairs" else f"층 표시 '{obs['floor_sign']}'"
-            st["floor_move"] = {"t": clock, "why": why}
-            self.mem.event(clock, f"층 이동 가능 ({why})")
+        # PR #1 리뷰 1: 지금 층과 같은 층 표시로는 켜지 않는다 (4층에서 '4F'를 본 뒤 215 오독 한 번에 2층으로 바뀌던 것).
+        # 계단을 벗어나고 마지막 계단 단서(계단 장면, 다른 층 표시) 뒤 FLOOR_MOVE_HOLD초가 지나면 끈다.
+        cue = "계단" if obs["place"] == "stairs" else (
+            f"층 표시 '{obs['floor_sign']}'" if obs["floor"] and obs["floor"] != st["floor"] else None)
+        if cue:
+            if not st["floor_move"]:
+                st["floor_move"] = {"t": clock, "why": cue, "last": clock}
+                self.mem.event(clock, f"층 이동 가능 ({cue})")
+            else:
+                st["floor_move"]["last"] = clock
+        elif st["floor_move"] and not st["stair"]["on"] and \
+                clock - st["floor_move"].get("last", st["floor_move"]["t"]) >= FLOOR_MOVE_HOLD:
+            self.mem.event(clock, f"층 이동 가능 끔 (계단 단서 {FLOOR_MOVE_HOLD}초 없음)")
+            st["floor_move"] = None
         loc = st["loc"]
         if first and si == 0:
             if obs["door_ahead"] != "none":  # 출입문 앞에서 시작: 문을 지나 들어가는 것이 먼저 (층은 가정하지 않음, 2026-11-23)
