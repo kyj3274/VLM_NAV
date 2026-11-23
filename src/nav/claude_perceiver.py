@@ -54,6 +54,7 @@ SEE_DEST_SCHEMA = _obj({**SEE, "dest": DEST})
 PLATE2 = _obj({**PLATE["properties"], "img": {"type": "integer", "enum": [1, 2]}})
 SEE2_SCHEMA = _obj({**SEE, "plates": {"type": "array", "items": PLATE2}})
 SEE2_DEST_SCHEMA = _obj({**SEE, "plates": {"type": "array", "items": PLATE2}, "dest": DEST})
+# 판 4 (2026-11-23 사용자 지시 4): 엘리베이터 안 층 표시창 ed 칸을 see()에서 더한다. 판 2·3(캐시 재생)의 스키마·프롬프트는 그대로.
 RECHECK_SCHEMA = _obj({"n": _S, "name": _S})
 QUICK_SCHEMA = _obj({"plates": {"type": "array", "items": _obj({k: PLATE["properties"][k] for k in ("n", "m", "on", "box")})}})
 
@@ -81,6 +82,9 @@ TWO_RULE = """
 사진 두 장은 같은 1초 안에 앞뒤로 찍은 것이다(1이 먼저, 2가 나중). 두 장을 합쳐 한 번만 적는다.
 - 같은 문패가 두 장에 다 보이면 한 번만 적고, 번호가 더 또렷한 사진을 img에 적는다. m, box는 그 사진 기준이다.
 - 나머지 칸은 나중 사진(2) 기준으로 적되, 1에만 보인 것도 적는다."""
+
+ED_RULE = """
+- ed: 사용자가 엘리베이터 안에 있을 때(place가 in_elev) 엘리베이터 안 층 표시창의 글자가 또렷하면 그대로(예: 숫자 하나나 B와 숫자). 엘리베이터 밖이거나 안 보이면 빈 문자열."""
 
 DEST_RULE = """
 - dest: 사용자의 목적지가 사진에 보일 때만 seen true. why는 근거(plate 문패 글자, pictogram 그림 표지, text 그 밖의 글자). 안 보이면 seen false, side none, m -1, why none."""
@@ -111,6 +115,16 @@ def floor_of_sign(s):
         return "B" + m.group(1)
     m = re.search(r"(\d{1,2})(?:F|층)", s)
     return str(int(m.group(1))) if m else None
+
+
+def floor_of_display(s):
+    """엘리베이터 안 층 표시창 글자 → 층. '4', '4F', 'B1', '지하1' → '4', 'B1'. 모르면 None."""
+    s = (s or "").upper().replace(" ", "")
+    m = re.fullmatch(r"(?:지하|B)(\d)(?:F|층)?", s)
+    if m:
+        return "B" + m.group(1)
+    m = re.fullmatch(r"(\d{1,2})(?:F|층)?", s)
+    return str(int(m.group(1))) if m and int(m.group(1)) > 0 else None
 
 
 def floors_of_stair_sign(s):
@@ -170,7 +184,8 @@ def clean(data, img_size=None):
            "floor": floor_of_sign(data.get("floor_sign")), "place": data.get("place", "unknown"),
            "stair_sign": (data.get("ss") or "").strip(), "stair_floors": floors_of_stair_sign(data.get("ss")),
            "door_ahead": data.get("door_ahead", "none"), "elev": elev,
-           "arrows": (data.get("arrows") or [])[:3], "fixes": fixes}
+           "arrows": (data.get("arrows") or [])[:3], "fixes": fixes,
+           "elev_floor": floor_of_display(data.get("ed")) if data.get("place") == "in_elev" else None}
     if "dest" in data:
         d = data["dest"]
         out["dest"] = {"seen": bool(d.get("seen")), "side": d.get("side", "none"),
@@ -183,8 +198,9 @@ class Perceiver:
     """client: claude_client의 GatewayClient / FakeClient / DryRunClient.
     send_side: Claude에 보낼 사진 긴 변(None = 원본). cache: 같은 프레임·같은 설정이면 다시 부르지 않음(jsonl)."""
 
-    def __init__(self, client, send_side=None, cache_path=None, dest_text=None, version=3):
-        # version: 인식 프롬프트 판. 3 = 2026-11-19 (계단 층 표시 ss, 엘리베이터 근거 4종·먼 거리). 캐시 키에 붙여
+    def __init__(self, client, send_side=None, cache_path=None, dest_text=None, version=4):
+        # version: 인식 프롬프트 판. 4 = 2026-11-23 (엘리베이터 안 층 표시창 ed). 3 = 2026-11-19 (계단 층 표시 ss,
+        # 엘리베이터 근거 4종·먼 거리). 캐시 키에 붙여
         # 이전 프롬프트 결과와 섞이지 않게 한다. 2 = 이전 캐시(claude_v2.jsonl)를 그대로 재생할 때.
         self.client, self.send_side, self.dest_text, self.version = client, send_side, dest_text, version
         self.cache_path = Path(cache_path) if cache_path else None
@@ -219,7 +235,8 @@ class Perceiver:
         if key in self.cache:
             r = self.cache[key]
             return {"obs": self._attach(clean(r["data"]), frames), "call": r["log"], "cached": True}
-        system = SYSTEM + (DEST_RULE if dest else "") + (TWO_RULE if two else "")
+        v4 = self.version >= 4
+        system = SYSTEM + (ED_RULE if v4 else "") + (DEST_RULE if dest else "") + (TWO_RULE if two else "")
         if two:
             content = []
             for i, f in enumerate(frames, 1):
@@ -228,6 +245,8 @@ class Perceiver:
         else:
             content = [jpeg_block(resize(img or Image.open(frames[0]).convert("RGB"), self.send_side))]
             schema = SEE_DEST_SCHEMA if dest else SEE_SCHEMA
+        if v4:
+            schema = {**schema, "properties": {**schema["properties"], "ed": _S}, "required": [*schema["required"], "ed"]}
         content.append({"type": "text", "text": f"사용자의 목적지: {dest}" if dest else "보이는 것을 적어라."})
         res = self.client.call(system, content, schema, max_tokens=500, kind="see")
         rec = self._store(key, res)

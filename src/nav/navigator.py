@@ -4,7 +4,8 @@
   인식  1초 구간에서 가장 선명한 장 1장을 Claude에 보냄(claude_perceiver.see): 문패, 층 표시, 장소, 엘리베이터(근거),
         화살표, 앞의 출입문. 중요한 문패 1개는 원본에서 잘라 확대해 다시 읽음(recheck).
   판단  규칙. 문패 확정(nav_memory 믿음 점수 3), 층 충돌은 2초 연속, 번호 증감으로 진행 방향, 엘리베이터는 근거가
-        2초 연속, 엘리베이터 대기 6초, 하차 직후 4초는 뒤의 엘리베이터 무시, 10초 무안내면 한 번 말함, 시작 위치 파악 5초.
+        2초 연속, 하차 직후 4초는 뒤의 엘리베이터 무시, 10초 무안내면 한 번 말함, 시작 위치 파악 5초.
+        층을 모르면 1층으로 가정하지 않는다(엘리베이터·계단 안내 없음, 15초 뒤 층을 물음, 말로 받은 층은 문패와 같은 근거).
   문장  상태로 틀에 맞춰 만든다. 10초 동안 할 말이 없으면 지금 행동을 되풀이하는 규칙 문장.
         (Claude say는 2단계에서 보조로 썼으나 3단계에서 사용자 지시로 스키마에서 뺌)
 VLM_NAV 대비 바뀐 것은 docs/17_2026-11-17_Claude_인식_기준표.md에 표로 정리.
@@ -37,7 +38,6 @@ DENSE = 8
 QUIET_SAY = 10    # 이 초 동안 새 안내가 없으면 한 번 말함
 LOCATE_SEC = 5    # 경로 시작: 이 시간 동안 위치(층·장소)를 먼저 파악
 LOCATE_ASKS = 2   # 층을 모르면 "주변을 더 보여 주세요"를 몇 번까지
-EL_WAIT = 6       # 엘리베이터 앞에서 층 단서를 기다리는 초
 EXIT_IGNORE = 4   # 엘리베이터에서 내린 뒤 이 초 동안은 (뒤에 있는) 엘리베이터를 무시
 TREND_M = 10.0    # 진행 방향 판단에 쓰는 문패 거리(m) 상한 (Claude 거리는 대략값이라 넉넉히)
 NEIGHBOR = 3      # 진행 방향은 목적지 번호 ±3 안의 문패로만 판단 (목적지 근처 번호는 차례대로 붙어 있다고 봄)
@@ -54,6 +54,13 @@ EL_MISS = 2       # 엘리베이터 후보를 본 뒤 이 장 연속 안 보이�
 EL_PASS_M = 2.5   # 지나침은 마지막에 옆(L/R) 이 거리 이내에서 보였을 때만. 더 멀리서 사라지면 그쪽으로 몸을 돌린 것으로 봄
                   # (영상 1층 11~13초: 오른쪽 4m 엘리베이터 쪽으로 돌 때 사라져 '지나쳤습니다'가 잘못 나와서)
 QUICK_MAX = 3     # 문 앞 빠른 확인(confirm_now)은 목적지 하나에 이 횟수까지 (2026-11-19 사용자 지시 4)
+# 2026-11-23 사용자 지시: 1층 가정(VLM_NAV assume1)을 없앰. 층을 모르면 '모름'으로 두고 엘리베이터·계단 안내를 하지 않는다.
+#   (4층에서 시작해도 위치 파악 5초 뒤 1층으로 보고 "엘리베이터를 타고 4층을 누르세요"라고 했음)
+ASK_FLOOR_SEC = 15    # 구간 시작 뒤 이 초가 지나도 층을 모르면 "지금 몇 층인지 말씀해 주세요"
+ASK_FLOOR_EVERY = 20  # 같은 질문은 이 초에 한 번까지
+CHECK_SAY = "지금 층을 확인하고 있습니다. 휴대폰을 천천히 좌우로 비춰 주세요."
+ASK_SAY = "지금 몇 층인지 말씀해 주세요."
+EL_DISP_FRESH = 10    # 엘리베이터 안 층 표시창을 '내렸어요' 전 이 초 안에 읽었으면 내린 층의 임시 층으로 씀
 ACTIONS = ["문 통과", "직진", "왼쪽", "오른쪽", "뒤로 돌기", "엘리베이터 타기", "엘리베이터로 돌아가기",
            "멈추고 둘러보기", "목적지 접근", "도착",
            "계단으로 올라가기", "계단으로 내려가기", "계단에서 나가기"]  # 계단 3개: 2026-11-19 사용자 지시 5
@@ -109,21 +116,25 @@ class Runner:
 class Navigator:
     """길안내 한 번(목적지 하나)의 상태. 1초 구간 프레임을 step()에 넣으면 그 초의 기록(안내 문장 포함)을 돌려준다."""
 
-    def __init__(self, runner, target):
+    def __init__(self, runner, target, start_floor=None):
+        """start_floor: 사용자가 말한 출발 층("4층에서 410호")이 있으면 그 층으로 시작 (문패와 같은 근거)."""
         self.runner, self.target = runner, target
         self.tf = target[0] if ROOM.match(target) else None  # 목적지 층 (3자리 호실의 첫 자리)
         self.st = {"floor": None, "wrong_floor": False, "arrived": False, "room": None, "floor_rooms": [],
                    "elevator_said": False, "el_run": 0, "el_seen": False, "el_ready": None, "button": None,
                    "pending": None, "fs_last": None, "near_d": [], "trend_said": None, "target_seen": None,
-                   "arr_run": 0, "last_say": 0, "loc": None, "assume1": False, "door_phase": False, "door_gone": 0,
+                   "arr_run": 0, "last_say": 0, "loc": None, "door_phase": False, "door_gone": 0,
                    "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기", "maybe_said": False,
                    "floor_move": None, "quick_asked": False, "quick_n": 0,
                    "el_cand": None, "el_last": None, "el_miss": 0, "el_passed": False, "stair": new_stair(),
-                   "floor_temp": False}
+                   "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
         self.mem.event(0, f"안내 시작 (목적지 {target})")
+        if start_floor:
+            self.st.update(floor=str(start_floor), floor_src="말", wrong_floor=bool(self.tf) and str(start_floor) != self.tf)
+            self.mem.event(0, f"출발 층 {start_floor}층 (사용자가 말함)")
         self.si, self.sec, self.seq, self.seg_start = 0, 0, "", 0
         self.quick_max = QUICK_MAX  # 문 앞 빠른 확인 횟수 (웹 서버가 0으로 끌 수 있음)
         self.announce = True  # 첫 걸음에 "○호로 안내를 시작합니다"를 말할지 (웹은 미리 말함)
@@ -140,26 +151,62 @@ class Navigator:
         self.target, self.tf = target, target[0] if ROOM.match(target) else None
         self.mem.target = target
         st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
-                  elevator_said=False, el_approach=False, el_ready=None, quick_asked=False, quick_n=0)
+                  elevator_said=False, el_approach=False, el_ready=None, quick_asked=False, quick_n=0,
+                  el_cand=None, el_passed=False)
+        self.mem.event(self.clock, f"목적지 변경: {target}")
         if st["floor"] is not None:
             st["wrong_floor"] = bool(self.tf) and st["floor"] != self.tf
             st["act"] = ("엘리베이터로 돌아가기" if self.si > 0 else "직진") if st["wrong_floor"] else "직진"
-        self.mem.event(self.clock, f"목적지 변경: {target}")
+
+    def floor_next(self, head=""):
+        """층을 알 때 다음 행동 문장 (목적지 층이면 복도 직진, 아니면 엘리베이터). act·wrong_floor도 정한다."""
+        st, target, tf = self.st, self.target, self.tf
+        floor = st["floor"]
+        st["wrong_floor"] = bool(tf) and floor != tf
+        if not st["wrong_floor"]:
+            st["act"] = "직진"
+            return [head + ("목적지 층입니다. " if tf else "") + "앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
+        if self.si > 0:
+            st["act"] = "엘리베이터로 돌아가기"
+            return [head + f"{target}호는 {tf}층에 있습니다. 엘리베이터로 돌아가 {tf}층을 누르세요."]
+        st["act"] = "직진"
+        return [head + f"{target}호는 {tf}층에 있습니다. 엘리베이터를 찾아 {tf}층으로 가겠습니다. 앞으로 천천히 직진해 주세요."]
+
+    def set_floor(self, floor, source="말"):
+        """사용자가 말한 지금 층("여기 4층이야"). 문패와 같은 근거: 바로 층을 정하고, 그 뒤 다른 층 문패가
+        연속 2번 보이면 문패를 따른다(층 충돌 규칙). 반환: 안내 문장들."""
+        st = self.st
+        floor = str(floor)
+        old = st["floor"]
+        st.update(floor=floor, floor_src=source, floor_temp=False, floor_move=None, pending=None, loc=None,
+                  door_phase=False, elevator_said=False, el_approach=False, el_ready=None, el_cand=None)
+        self.mem.event(self.clock, f"지금 층 {floor}층 ({'사용자가 말함' if source == '말' else source}"
+                       + (f", 전에는 {old}층" if old and old != floor else "") + ")")
+        st["last_say"] = self.clock
+        return self.floor_next(head=f"{floor}층으로 알겠습니다. ")
 
     # ------------------------------------------------------------ 구간
     def new_segment(self, seq=""):
-        """구간 시작. 첫 구간이 아니면 엘리베이터를 타고 내린 것으로 본다 (층·위치는 모름으로)."""
+        """구간 시작. 첫 구간이 아니면 엘리베이터를 타고 내린 것으로 본다 (층·위치는 모름으로).
+        내리기 직전(EL_DISP_FRESH초 안)에 엘리베이터 안 층 표시창을 읽었으면 그 층을 임시 층으로 둔다
+        (임시 층은 다른 층 확정 문패 한 번이면 문패를 따름)."""
         if self.records or self.seg_n:
             self.si += 1
             self.mem.new_segment(self.clock)
         self.seq, self.sec, self.seg_start, self.seg_n = seq, 0, self.clock, 0
         if self.si > 0:
-            self.st.update(floor=None, wrong_floor=False, room=None, floor_rooms=[], elevator_said=False, el_run=0,
+            disp = self.st.get("el_disp")
+            carry = disp["floor"] if disp and self.clock - disp["t"] <= EL_DISP_FRESH else None
+            self.st.update(floor=carry, wrong_floor=bool(carry and self.tf) and carry != self.tf, room=None,
+                           floor_rooms=[], elevator_said=False, el_run=0,
                            el_seen=False, el_ready=None, button=None, pending=None, fs_last=None, near_d=[],
-                           trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None, assume1=False,
+                           trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None,
                            door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False,
                            floor_move=None, quick_asked=False, quick_n=0, el_cand=None, el_last=None, el_miss=0,
-                           el_passed=False, stair=new_stair(), floor_temp=False)
+                           el_passed=False, stair=new_stair(), floor_temp=bool(carry),
+                           floor_src="엘리베이터 표시창" if carry else None, ask_t=None, check_t=None, el_disp=None)
+            if carry:
+                self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
 
     # ------------------------------------------------------------ 재확인 대상
     def recheck_pick(self, obs):
@@ -197,23 +244,23 @@ class Navigator:
 
     # ------------------------------------------------------------ 위치 파악 끝
     def locate_end(self, loc):
-        st, tf = self.st, self.tf
+        """위치 파악 시간(LOCATE_SEC)이 끝났는데 층을 모름. 1층으로 가정하지 않는다 (2026-11-23 사용자 지시):
+        층을 모르는 동안은 엘리베이터·계단 안내 없이 둘러보게 하고, ASK_FLOOR_SEC가 지나면 층을 묻는다."""
+        st = self.st
         places = Counter(p for p in loc["places"][-LOCATE_SEC:] if p and p != "unknown")
         place = cp.PLACE_KO.get(places.most_common(1)[0][0]) if places else None
-        if self.si == 0:  # 경로 시작은 1층으로 가정하고 바로 다음 행동 (문패를 읽으면 문패가 우선)
-            st["loc"], st["assume1"] = None, True
-            head = (f"여기는 {place}인 것 같습니다. " if place else "") + "1층으로 보고 안내하겠습니다. "
-            if tf == "1":
-                st["act"] = "직진"
-                return [head + "목적지 층입니다. 앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
-            if st["el_seen"]:
-                st["elevator_said"], st["act"] = True, "엘리베이터 타기"
-                return [head + f"앞에 엘리베이터가 있습니다. 엘리베이터를 타고 {tf}층을 누르세요."]
-            st["act"] = "직진"
-            return [head + f"{self.target}호는 {tf}층이니 엘리베이터를 찾겠습니다. 앞으로 천천히 직진해 주세요."]
-        st["loc"] = None
-        st["act"] = "직진"
-        return ["앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
+        st["loc"], st["act"], st["check_t"] = None, "멈추고 둘러보기", self.clock
+        return [(f"여기는 {place}인 것 같습니다. " if place else "") + CHECK_SAY]
+
+    def check_say(self, say, head=""):
+        """층을 모를 때 '지금 층을 확인하고 있습니다…'를 말한다 (QUIET_SAY초 안에 이미 말했으면 되풀이하지 않음)."""
+        st = self.st
+        if st["check_t"] is not None and self.clock - st["check_t"] < QUIET_SAY:
+            if head:
+                say.append(head.strip())
+            return
+        say.append(head + CHECK_SAY)
+        st["check_t"], st["act"] = self.clock, "멈추고 둘러보기"
 
     # ------------------------------------------------------------ 한 걸음
     def step(self, frames=None, t=None, observed=None, quick=False, rechecked=None):
@@ -249,10 +296,13 @@ class Navigator:
             self.mem.event(clock, f"층 이동 가능 ({why})")
         loc = st["loc"]
         if first and si == 0:
-            if obs["door_ahead"] != "none":  # 출입문 앞에서 시작: 문을 지나 들어가는 것이 먼저 (건물 입구 = 1층으로 가정)
+            if obs["door_ahead"] != "none":  # 출입문 앞에서 시작: 문을 지나 들어가는 것이 먼저 (층은 가정하지 않음, 2026-11-23)
                 kind = "유리문" if obs["door_ahead"] == "glass" else "문"
-                say.append(self.start_head() + f"앞에 {kind}이 있습니다. 문을 지나 들어가세요.")
-                st.update(door_phase=True, assume1=True, act="문 통과")
+                say.append(self.start_head() + (f"지금 {st['floor']}층입니다. " if st["floor"] else "")
+                           + f"앞에 {kind}이 있습니다. 문을 지나 들어가세요.")
+                st.update(door_phase=True, act="문 통과")
+            elif st["floor"] is not None:  # 출발 층을 말로 받음: 위치 파악 없이 바로 다음 행동
+                say.extend(self.floor_next(head=self.start_head() + f"지금 {st['floor']}층입니다. "))
             else:
                 st["loc"] = loc = {"until": clock + LOCATE_SEC, "asks": 0, "places": []}
                 say.append(self.start_head() + "지금 위치를 확인하겠습니다. 휴대폰을 앞으로 들고 천천히 좌우로 비춰 주세요.")
@@ -260,7 +310,8 @@ class Navigator:
         if loc is not None:
             loc["places"].append(obs["place"])
         if first and si > 0:
-            say.append("엘리베이터에서 내렸습니다. 문패를 확인하며 천천히 이동하세요.")
+            disp = f"표시창으로는 {st['floor']}층입니다. " if st["floor"] and st["floor_src"] == "엘리베이터 표시창" else ""
+            say.append(f"엘리베이터에서 내렸습니다. {disp}문패를 확인하며 천천히 이동하세요.")
             st["act"] = "직진"
 
         # ---- 출입문을 지났는가
@@ -268,11 +319,10 @@ class Navigator:
             st["door_gone"] = st["door_gone"] + 1 if obs["door_ahead"] == "none" else 0
             if st["door_gone"] >= DOOR_GONE:
                 st["door_phase"] = False
-                if tf and tf != "1" and st["floor"] is None:
-                    say.append(f"문을 지났습니다. {target}호는 {tf}층이니 엘리베이터를 찾겠습니다. 앞으로 천천히 직진해 주세요.")
+                if st["floor"] is None:  # 층을 모름: 엘리베이터를 찾으라고 하지 않는다 (2026-11-23, 전에는 1층 가정)
+                    self.check_say(say, head="문을 지났습니다. ")
                 else:
-                    say.append("문을 지났습니다. 앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다.")
-                st["act"] = "직진"
+                    say.extend(self.floor_next(head="문을 지났습니다. "))
 
         # ---- 확대 재확인 (최대 1개)
         plates = [dict(p) for p in obs["plates"]]
@@ -308,7 +358,7 @@ class Navigator:
 
         # ---- 계단 (2026-11-19 사용자 지시 3·4·5)
         stair = st["stair"]
-        cur = st["floor"] or ("1" if st["assume1"] else None)
+        cur = st["floor"]  # 층을 모르면 계단 안내(올라/내려)를 하지 않는다 (2026-11-23, 전에는 1층 가정)
         up = None if not (tf and cur) or tf == cur else fnum(tf) > fnum(cur)
         sf = obs.get("stair_floors") or []
         if sf:
@@ -339,7 +389,7 @@ class Navigator:
         if el["btn"] in ("L", "R"):
             st["button"] = {"L": "왼쪽", "R": "오른쪽"}[el["btn"]]
         ignore_el = si > 0 and clock - self.seg_start < EXIT_IGNORE
-        need_el = bool(tf) and not stair["on"] and (st["wrong_floor"] or (st["floor"] is None and st["assume1"] and tf != "1"))
+        need_el = bool(tf) and not stair["on"] and st["wrong_floor"] and st["floor"] is not None
         if el_cand and not ignore_el:
             st["el_last"], st["el_miss"], st["el_passed"] = {"t": clock, "side": el["side"], "m": el["m"]}, 0, False
             if (st["el_run"] == 1 and need_el and loc is None and not st["elevator_said"] and not st["el_approach"]
@@ -387,15 +437,18 @@ class Navigator:
                 st["elevator_said"] = True
                 st["act"] = "엘리베이터 타기" if si == 0 else "엘리베이터로 돌아가기"
             elif st["floor"] is None and st["el_ready"] is None:
-                say.append("앞에 엘리베이터가 있습니다. 지금 몇 층인지 먼저 확인하겠습니다. 주변을 천천히 비춰 주세요.")
-                st["el_ready"], st["act"] = clock, "멈추고 둘러보기"
+                # 층을 모르면 엘리베이터 안내를 하지 않는다 (2026-11-23). 엘리베이터는 기억에만 두고, 층을 알게 되면
+                # 그때 보이는 엘리베이터로 안내한다. (전: 6초 기다린 뒤 층 모른 채 '엘리베이터를 타고 ○층을 누르세요')
+                st["el_ready"] = clock
+                self.check_say(say)
 
         # ---- 층 충돌: 한 번 정한 층과 첫 자리가 다른 번호는 2초 연속일 때만 인정
         floor_change = None
         other = [x for x in rooms if st["floor"] and ROOM.match(x) and x[0] != st["floor"]]
+        one_shot = st["floor_move"] or st["floor_temp"]  # 계단·층 표시 뒤, 또는 임시 층(계단 표시·엘리베이터 표시창)
         if other:
             digit = other[0][0]
-            if st["floor_move"]:  # 계단·층 표시 뒤: 한 번이면 층 이동
+            if one_shot:  # 한 번이면 층 이동
                 floor_change = digit
                 self.mem.event(clock, f"층 이동 뒤 다른 층 문패 {other[0]}호: {st['floor']}층 → {digit}층 (연속 2번 안 기다림)")
             elif st["pending"] and st["pending"][0] == digit and st["pending"][1] == self.n - 1:
@@ -411,7 +464,7 @@ class Navigator:
         if fs and st["floor"] is None:
             fs_ok = fs
         elif fs and fs != st["floor"] and not floor_change:
-            if st["floor_move"]:
+            if one_shot:
                 floor_change = fs
                 self.mem.event(clock, f"층 이동 뒤 층 표시 '{obs['floor_sign']}': {st['floor']}층 → {fs}층 (연속 2번 안 기다림)")
             elif st["pending"] and st["pending"][0] == fs and st["pending"][1] == self.n - 1:
@@ -426,11 +479,22 @@ class Navigator:
         floor, basis = (floor_rooms[0][0], f"{floor_rooms[0]}호") if floor_rooms else (fs_ok, f"층 표지 '{obs['floor_sign']}'") \
             if fs_ok else (None, None)
         if floor_change:
-            floor, basis = floor_change, ("층 이동 뒤 한 번" if st["floor_move"] else "층 충돌 2번 연속")
+            floor, basis = floor_change, ("층 이동 뒤 한 번" if one_shot else "층 충돌 2번 연속")
+        # 엘리베이터 안 층 표시창 (2026-11-23 사용자 지시 4, 프롬프트 판 4의 ed 칸): 엘리베이터 안에서 또렷하면 바로 그 층.
+        # 타고 가는 동안 바뀌므로 다르면 바로 바꾸고, 다른 층 확정 문패 한 번이면 문패를 따르도록 임시 층으로 둔다.
+        ed = obs.get("elev_floor") if obs["place"] == "in_elev" else None
+        if ed and not floor:
+            st["el_disp"] = {"floor": ed, "t": clock}
+            if ed != st["floor"]:
+                self.mem.event(clock, f"엘리베이터 안 층 표시창 {ed}층" + (f" (전에는 {st['floor']}층)" if st["floor"] else ""))
+                st.update(floor=ed, floor_temp=True, floor_src="엘리베이터 표시창", loc=None, pending=None,
+                          wrong_floor=bool(tf) and ed != tf)
+                say.append(f"엘리베이터 표시창이 {ed}층입니다." + (" 목적지 층입니다." if ed == tf else ""))
         # 엘리베이터를 찾던 중(안내했거나 다가가는 중) 목적지 층에 와 있으면 엘리베이터 안내를 멈춘다 (지시 2)
-        el_busy = st["elevator_said"] or st["el_approach"] or st["el_ready"] is not None
+        el_busy = st["elevator_said"] or st["el_approach"]
         if floor and floor != st["floor"]:
-            st["floor_move"] = None
+            st["floor_move"], st["floor_temp"] = None, False
+            st["floor_src"] = basis
         if floor:
             new = [x for x in floor_rooms if x not in [r for _, r in st["floor_rooms"]]]
             where = ""
@@ -450,10 +514,7 @@ class Navigator:
                                "앞으로 천천히 직진하며 엘리베이터를 찾겠습니다.")
                     st["act"] = "직진"
             elif st["floor"] is None:
-                st["floor"], assumed = floor, st["assume1"]
-                st["assume1"] = False
-                if assumed and floor != "1":
-                    say.append(f"{basis}를 보니 1층이 아니라 {floor}층입니다.")
+                st["floor"] = floor
                 if floor == tf or not tf:
                     say.append(f"{floor}층이 맞습니다. {where}"
                                + ("엘리베이터를 탈 필요 없습니다. 복도를 따라 문패를 찾겠습니다." if el_busy else ""))
@@ -509,7 +570,7 @@ class Navigator:
                 temp = temp or tf
             stair["exit_said"] = False
             if temp and temp != st["floor"]:
-                st.update(floor=temp, floor_temp=True, assume1=False, wrong_floor=bool(tf) and temp != tf)
+                st.update(floor=temp, floor_temp=True, floor_src="계단 층 표시", wrong_floor=bool(tf) and temp != tf)
                 st["floor_move"] = st["floor_move"] or {"t": clock, "why": "계단 층 표시"}
                 self.mem.event(clock, f"계단에서 나옴: 임시 층 {temp}층 (계단 층 표시 '{stair['sign_text']}')")
                 if temp == tf:
@@ -521,7 +582,6 @@ class Navigator:
                     st["act"] = f"계단으로 {way}가기"
             elif st["act"].startswith("계단"):
                 st["act"] = "직진"
-                st["assume1"] = False  # 계단으로 층을 옮겼으니 1층 가정은 버림 (층은 문패로 다시 정함, 엘리베이터 찾기로 돌아가지 않음)
                 self.mem.event(clock, "계단에서 나옴 (층 표시 없음)")
 
         # ---- 진행 방향: 확정한 가까운(TREND_M 이내) 문패 번호가 목적지 번호에 가까워지는가
@@ -625,15 +685,15 @@ class Navigator:
         # ---- 위치 파악 시간 끝
         if st["loc"] is not None and clock + 1 >= st["loc"]["until"] and not st["arrived"]:
             say.extend(self.locate_end(st["loc"]))
-        # ---- 엘리베이터 앞 대기
-        if not st["arrived"] and st["el_ready"] is not None and not st["elevator_said"]:
-            if st["floor"] is not None:
-                st["el_ready"] = None
-            elif clock - st["el_ready"] >= EL_WAIT:
-                say.append("앞에 엘리베이터가 있습니다. 지금 층을 알 수 있는 표시는 보이지 않습니다. "
-                           + (f"호출 버튼은 엘리베이터 문 {st['button']} 벽에 있습니다. " if st["button"] else "")
-                           + f"엘리베이터를 타고 {tf}층을 누르세요.")
-                st["elevator_said"], st["act"] = True, "엘리베이터 타기"
+        # ---- 엘리베이터 앞에서 층을 모름: 층을 알게 되면 대기 표시를 지운다 (층 모른 채 타라고 하지 않음, 2026-11-23)
+        if st["el_ready"] is not None and st["floor"] is not None:
+            st["el_ready"] = None
+        # ---- 층 묻기 (2026-11-23 사용자 지시 3): 구간 시작 뒤 ASK_FLOOR_SEC초가 지나도 층을 모르면, ASK_FLOOR_EVERY초에 한 번
+        if (st["floor"] is None and not st["arrived"] and st["loc"] is None and clock - self.seg_start >= ASK_FLOOR_SEC
+                and (st["ask_t"] is None or clock - st["ask_t"] >= ASK_FLOOR_EVERY)):
+            say.append(ASK_SAY)
+            st["ask_t"] = clock
+            note["ask_floor"] = True
         # ---- 무안내 시간: 지금 행동을 되풀이하는 규칙 문장 (Claude say는 2026-11-18 사용자 지시로 스키마에서 뺌)
         # (2026-11-19 사용자 지시 3) 어떤 상태든 10초 동안 새 안내가 없으면 지금 상황을 짧게 말한다.
         if say:
@@ -648,7 +708,7 @@ class Navigator:
         st, target, tf = self.st, self.target, self.tf
         act, floor, stair = st["act"], st["floor"], st["stair"]
         place = cp.PLACE_KO.get(obs.get("place")) if obs.get("place") not in ("unknown", "stairs", None) else None
-        seeking = st["wrong_floor"] or (floor is None and st["assume1"] and tf not in (None, "1"))
+        seeking = st["wrong_floor"] and floor is not None
         if act == "뒤로 돌기":
             return "목적지와 멀어지고 있습니다. 뒤로 돌아가세요."
         if act == "엘리베이터로 돌아가기":
@@ -663,18 +723,17 @@ class Navigator:
             return f"계단입니다. {est}{tf}층까지 {'올라' if act == '계단으로 올라가기' else '내려'}가세요."
         if act == "엘리베이터 타기":
             return f"엘리베이터를 타고 {tf}층을 누르세요."
-        if st["el_ready"] is not None:
-            return "앞에 엘리베이터가 있습니다. 지금 몇 층인지 확인하고 있습니다."
         if act == "목적지 접근":
             return f"{target}호를 확인하고 있습니다. 천천히 다가가세요."
         if act == "문 통과":
             return "앞의 문을 지나 들어가세요."
+        if floor is None:  # 층을 모름: 엘리베이터·계단 말 없이 (2026-11-23, 전에는 1층 가정 때 '엘리베이터를 찾고 있습니다')
+            st["check_t"] = self.clock
+            return CHECK_SAY
         if seeking and not st["elevator_said"]:
             return "엘리베이터를 찾고 있습니다. 천천히 직진하며 주변을 비춰 주세요."
         if floor and floor == tf:
             return f"{floor}층 {place or ''}입니다. 문패를 찾고 있습니다.".replace("층 입니다", "층입니다")
-        if floor is None and not st["assume1"]:
-            return f"{place + '입니다. ' if place else ''}문패로 몇 층인지 확인하고 있습니다."
         return "계속 앞으로 천천히 가세요."
 
     def _finish(self, o, obs, rooms, say, note, latency, calls, error, recheck):
@@ -703,8 +762,8 @@ class Navigator:
         return rec
 
 
-def run_route(runner, root, target, seq_names, out, max_steps=None):
-    nav = Navigator(runner, target)
+def run_route(runner, root, target, seq_names, out, max_steps=None, start_floor=None):
+    nav = Navigator(runner, target, start_floor=start_floor)
     for seq in seq_names:
         nav.new_segment(seq)
         files = sorted((Path(root) / seq).glob("i*.jpg"))
@@ -739,8 +798,10 @@ def main():
     ap.add_argument("--cache", default=str(ROOT / "outputs/cache/claude_v2.jsonl"),
                     help="인식 캐시 (2단계 결과는 outputs/cache/claude.jsonl: say 칸이 있던 프롬프트)")
     ap.add_argument("--name", default="claude")
-    ap.add_argument("--prompt-version", type=int, default=3,
-                    help="인식 프롬프트 판 (3: 2026-11-19 계단 층 표시·엘리베이터 근거 4종, 2: 이전 캐시 재생)")
+    ap.add_argument("--prompt-version", type=int, default=4,
+                    help="인식 프롬프트 판 (4: 2026-11-23 엘리베이터 안 층 표시창, 3: 2026-11-19 계단 층 표시·엘리베이터 근거 4종, "
+                         "2: 이전 캐시 재생)")
+    ap.add_argument("--start-floor", default=None, help="사용자가 말한 출발 층 (예: 1). 없으면 층 모름으로 시작")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--replay", action="store_true", help="캐시만 씀 (Claude를 부르지 않음, 크레딧 0). 규칙만 바꿨을 때")
     ap.add_argument("--max-steps", type=int, default=None, help="구간마다 앞에서부터 이 초만")
@@ -763,7 +824,7 @@ def main():
             seq_names = seqs.split(",")
             name = "_".join(s.split("_")[0] for s in seq_names)
             run_route(runner, a.frames, target, seq_names, Path(a.out_dir) / f"guide_{target}_{name}_{a.name}.jsonl",
-                      a.max_steps)
+                      a.max_steps, start_floor=a.start_floor)
     except CreditLimit as e:
         print(f"크레딧 한도로 멈춤: {e}", flush=True)
     if before is not None:

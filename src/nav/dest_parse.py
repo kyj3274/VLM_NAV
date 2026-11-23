@@ -68,9 +68,42 @@ def parse_room(text: str) -> str | None:
     return None
 
 
+# 지금 층 말하기 (2026-11-23 사용자 지시 2): "4층인데 410호", "4층에서 410호", 안내 중 "여기 4층이야".
+# 목적지와 같이 말할 때는 '지금 층'임을 나타내는 말이 붙어야 지금 층으로 본다("4층 410호"는 목적지 층일 수 있어서).
+_FLOOR_WORD = r"(지하\s*\d|[bB]\s*\d|\d{1,2}|지하\s*[일이삼]|[일이삼사오육칠팔구십]{1,3})\s*층"
+_HERE_AFTER = r"\s*(?:인데|이고|이니까|이니|이야|이에요|예요|입니다|이요|요|에서|에\s*있|에\s*왔)"
+_HERE_BEFORE = r"(?:여기|지금|현재)\s*(?:는|은)?\s*"
+
+
+def _floor_value(w: str) -> str | None:
+    w = re.sub(r"\s+", "", w)
+    b = re.fullmatch(r"(?:지하|[bB])(\d|[일이삼])", w)
+    if b:
+        d = b.group(1)
+        return "B" + (d if d.isdigit() else str(DIG[d]))
+    if w.isdigit():
+        return str(int(w)) if int(w) > 0 else None
+    v = sino(w)
+    return str(v) if v and 0 < v < 100 else None
+
+
+def parse_here_floor(text: str, alone: bool = False) -> str | None:
+    """말한 문장에서 '지금 층'. alone=True(호실 번호 없이 층만 말함)이면 "4층", "사층이요"도 지금 층으로 본다."""
+    t = (text or "").strip()
+    for pat in (_HERE_BEFORE + _FLOOR_WORD, _FLOOR_WORD + _HERE_AFTER) + ((_FLOOR_WORD,) if alone else ()):
+        m = re.search(pat, t)
+        if m:
+            v = _floor_value(m.group(1))
+            if v:
+                return v
+    return None
+
+
 def parse_destination(text: str) -> dict | None:
-    """{"원문", "target": "410", "name": "410호", "floor": "4"} 또는 None."""
+    """{"원문", "target": "410", "name": "410호", "floor": "4", "here": "1" 또는 None} 또는 None.
+    here: 같이 말한 지금 층 ("1층인데 410호" → "1")."""
     room = parse_room(text)
     if room is None:
         return None
-    return {"원문": (text or "").strip(), "target": room, "name": f"{room}호", "floor": room[0]}
+    return {"원문": (text or "").strip(), "target": room, "name": f"{room}호", "floor": room[0],
+            "here": parse_here_floor(text)}

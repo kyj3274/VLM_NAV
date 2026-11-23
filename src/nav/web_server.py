@@ -37,7 +37,7 @@ from pydantic import BaseModel  # noqa: E402
 
 import claude_perceiver as cp  # noqa: E402
 from claude_client import ROOT, CreditLimit, GatewayClient, Ledger  # noqa: E402
-from dest_parse import parse_destination  # noqa: E402
+from dest_parse import parse_destination, parse_here_floor  # noqa: E402
 from navigator import Navigator, Runner  # noqa: E402
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -219,7 +219,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         d = cfg.sessions_dir / sid
         (d / "frames").mkdir(parents=True, exist_ok=True)
         client = client_factory(dest["target"], cfg.credit_per_session)
-        nav = Navigator(Runner(cp.Perceiver(client)), dest["target"])
+        nav = Navigator(Runner(cp.Perceiver(client)), dest["target"], start_floor=dest.get("here"))
         nav.announce = False   # "410호로 안내하겠습니다"를 이미 말함
         nav.quick_max = nav.quick_max if cfg.quick_confirm else 0
         nav.new_segment("live_0")
@@ -229,17 +229,38 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         sessions[sid] = ws
         ws.log({"event": "start", "wall": wall(), "t": 0.0, "target": dest["target"], "destination": dest,
                 "model": getattr(client, "model", ""), "fake": cfg.fake, **info, **ws.info})
+        here = f" 지금 {dest['here']}층에서 출발합니다." if dest.get("here") else ""
         return {"status": "ok", "session_id": sid, "target": dest["target"], "name": dest["name"],
-                "say": [f"{dest['name']}로 안내하겠습니다."]}
+                "say": [f"{dest['name']}로 안내하겠습니다.{here}"], "floor": dest.get("here")}
 
     def change(ws: WebSession, dest: dict, info: dict) -> dict:
+        """안내 중 목적지 변경. 같이 말한 지금 층("4층에서 105호")이 있으면 그 층도 반영한다."""
         with ws.alock:
             ws.nav.set_target(dest["target"])
+            nxt = ws.nav.set_floor(dest["here"]) if dest.get("here") else []
             ws.target = dest["target"]
             ws.stopped, ws.stop_reason = False, ""
-        ws.log({"event": "destination", "wall": wall(), "t": ws.nav.clock, "target": dest["target"], **info})
+            floor, action = ws.nav.st["floor"], ws.nav.st["act"]
+        ws.log({"event": "destination", "wall": wall(), "t": ws.nav.clock, "target": dest["target"],
+                "here": dest.get("here"), "next": nxt, "action": action, **info})
         return {"status": "ok", "session_id": ws.id, "target": dest["target"], "name": dest["name"],
-                "say": [f"{dest['name']}로 안내하겠습니다."]}
+                "say": [f"{dest['name']}로 안내하겠습니다."] + nxt, "floor": floor, "action": action}
+
+    def here_floor(ws: WebSession, floor: str, info: dict) -> dict:
+        """안내 중 "여기 4층이야": 지금 층으로 바로 반영 (2026-11-23 사용자 지시 2). 문패와 같은 근거."""
+        with ws.alock:
+            say = ws.nav.set_floor(floor)
+            action = ws.nav.st["act"]
+        ws.log({"event": "here_floor", "wall": wall(), "t": ws.nav.clock, "floor": floor, "say": say, **info})
+        return {"status": "ok", "kind": "floor", "session_id": ws.id, "target": ws.target, "name": f"{ws.target}호",
+                "say": say, "floor": floor, "action": action}
+
+    def change_or_floor(ws: WebSession, text: str, info: dict) -> dict:
+        dest = parse_destination(text)
+        if dest:
+            return change(ws, dest, info)
+        floor = parse_here_floor(text, alone=True)
+        return here_floor(ws, floor, info) if floor else retry(info, ws)
 
     def retry(info: dict, ws: WebSession | None = None) -> dict:
         rec = {"event": "destination_retry", "wall": wall(), **info}
@@ -263,8 +284,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     def change_destination(sid: str, body: DestBody):
         ws = get_ws(sid)
         info = {"source": body.source, "heard": body.destination, "transcript_ms": body.transcript_ms}
-        dest = parse_destination(body.destination)
-        return change(ws, dest, info) if dest else retry(info, ws)
+        return change_or_floor(ws, body.destination, info)
 
     def transcribe(audio: UploadFile, where: Path) -> tuple[str, dict]:
         data = audio.file.read()
@@ -301,8 +321,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     def voice_change(sid: str, audio: UploadFile = File(...)):
         ws = get_ws(sid)
         text, info = transcribe(audio, ws.dir / "voice")
-        dest = None if info["reject"] else parse_destination(text)
-        return {**change(ws, dest, info), "heard": text} if dest else retry(info, ws)
+        return {**(retry(info, ws) if info["reject"] else change_or_floor(ws, text, info)), "heard": text}
 
     # ------------------------------------------------------------ 사진 (겹쳐 보내기)
     @app.post("/api/session/{sid}/frame", dependencies=[Depends(check_code)])
@@ -402,7 +421,8 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                                                     encoding="utf-8")
                 sync_credit(ws)
                 st = rec["state"]
-                reply = {"status": "ok", "seq": seq, "say": rec["say"], "action": rec["action"], "floor": st.get("floor"),
+                reply = {"status": "ok", "seq": seq, "ask_floor": bool(rec.get("ask_floor")),
+                         "say": rec["say"], "action": rec["action"], "floor": st.get("floor"),
                          "arrived": st.get("arrived"), "rooms": rec["rooms"], "error": rec["error"],
                          "server_s": rec["server_s"], "see_s": rec["see_s"], "credit": ws.credit,
                          "target": ws.target, "detail": detail_of(ws),
@@ -424,7 +444,9 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 if not ws.nav.records:  # 사진을 보내기 전에 눌러도 층이 바뀐 것으로 (새 구간)
                     ws.nav.seg_n = 1
                 ws.nav.new_segment(f"live_{ws.nav.si + 1}")
-                say = ["엘리베이터에서 내렸습니다. 지금 층을 확인하겠습니다."]
+                carry = ws.nav.st["floor"]
+                say = ["엘리베이터에서 내렸습니다. " + (f"표시창으로는 {carry}층입니다. 문패로 확인하겠습니다."
+                                                    if carry else "지금 층을 확인하겠습니다.")]
             elif body.type in ("end", "stop"):
                 ws.stopped, ws.stop_reason = True, {"end": "사용자가 끝냄", "stop": "관찰자 비상 정지"}[body.type]
                 say = ["안내를 마칩니다."] if body.type == "end" else ["안내를 멈췄습니다."]

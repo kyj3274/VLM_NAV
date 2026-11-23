@@ -50,12 +50,13 @@ def run(nav, k, seg=None):
 
 
 def test_route_a_like():
+    """출발 층을 말로 받은 경우("1층인데 314호"): 전의 1층 가정 흐름과 같다 (2026-11-23부터 1층 가정 없음)."""
     far = {**EL, "side": "R", "m": 5.0}
     script = [O(door="glass", place="entrance")] * 2 + [O()] * 3 + [O(elev=far)] * 2 + [O(elev=EL, place="elev_hall")] * 2
-    nav = nv.Navigator(ScriptRunner(script), "314")
+    nav = nv.Navigator(ScriptRunner(script), "314", start_floor="1")
     nav.new_segment("1")
     recs = run(nav, 9)
-    assert recs[0]["action"] == "문 통과" and "유리문" in recs[0]["say"][0]
+    assert recs[0]["action"] == "문 통과" and "지금 1층입니다. 앞에 유리문이 있습니다" in recs[0]["say"][0]
     assert recs[3]["action"] == "직진"  # 문이 2초 안 보임
     assert recs[6]["action"] == "직진" and recs[6]["say"] == ["엘리베이터가 1시 방향 약 5미터에 있습니다. 그쪽으로 천천히 가세요."]
     assert recs[7]["action"] == "엘리베이터 타기" and "3층을 누르세요" in " ".join(recs[7]["say"])
@@ -378,3 +379,112 @@ def test_clean_stair_sign_and_elevator_kinds():
     o = cp.clean({"plates": [], "fs": "", "ss": "4F 3F", "place": "stairs", "door": "none",
                   "el": [{"why": "hall", "side": "C", "m": 14, "btn": "none"}], "arrows": []})
     assert o["stair_floors"] == ["3", "4"] and o["elev"]["cand"] and not o["elev"]["seen"] and o["elev"]["m"] == 14
+
+
+# ---------------------------------------------------------------- 2026-11-23 (A) 1층 가정 없앰·출발 층 말하기
+C = nv.CHECK_SAY
+
+
+def says(recs):
+    return " ".join(" ".join(r["say"]) for r in recs)
+
+
+def test_no_floor_assumption_no_elevator_guidance():
+    """층을 모르면 1층으로 가정하지 않는다: 출입문·엘리베이터가 보여도 엘리베이터 안내 없이 층 확인, 15초 뒤 층 질문(20초에 한 번)."""
+    script = [O(door="glass", place="entrance")] * 2 + [O()] * 3 + [O(elev=EL, place="elev_hall")] * 40
+    nav = nv.Navigator(ScriptRunner(script), "410")
+    nav.new_segment("1")
+    recs = run(nav, 45)
+    assert recs[0]["action"] == "문 통과"
+    assert "엘리베이터" not in says(recs) and "1층" not in says(recs)
+    assert all(r["action"] not in ("엘리베이터 타기", "직진") for r in recs[3:])
+    assert recs[3]["say"] == ["문을 지났습니다. " + C] and recs[3]["action"] == "멈추고 둘러보기"
+    asks = [r["t"] for r in recs if nv.ASK_SAY in r["say"]]
+    assert asks == [15, 35] and recs[15]["ask_floor"]
+    assert all(r["state"]["floor"] is None for r in recs)
+
+
+def test_start_4f_no_door_plate_sets_floor():
+    """4층에서 시작(410·405): 위치 파악 5초 동안 층을 모르면 1층이라고 하지 않고, 확정 문패를 읽으면 바로 4층."""
+    for target in ("410", "405"):
+        script = [O(elev=EL, place="elev_hall")] * 6 + [O([("412", "C", 2.5, "door")])] + [O(elev=EL)] * 3
+        nav = nv.Navigator(ScriptRunner(script), target)
+        nav.new_segment("1")
+        recs = run(nav, 10)
+        assert recs[4]["say"] == ["여기는 엘리베이터 앞인 것 같습니다. " + C]
+        assert "엘리베이터를 타고" not in says(recs) and "1층" not in says(recs)
+        assert recs[6]["state"]["floor"] == "4" and not recs[6]["state"]["wrong_floor"]
+        assert recs[6]["say"][0].startswith("지금 위치는 4층") is False  # 위치 파악은 끝났음
+        assert any("4층이 맞습니다" in x for x in recs[6]["say"]) and recs[6]["action"] == "직진"
+        assert all(r["action"] != "엘리베이터 타기" for r in recs)
+
+
+def test_start_floor_said_with_destination():
+    """"4층에서 410호": 말한 층으로 바로 시작 (위치 파악·질문 없음, 엘리베이터 안내 없음)."""
+    nav = nv.Navigator(ScriptRunner([O(elev=EL, place="elev_hall")] * 20), "410", start_floor="4")
+    nav.new_segment("1")
+    recs = run(nav, 20)
+    assert recs[0]["say"] == ["410호로 안내를 시작합니다. 410호는 4층입니다. 지금 4층입니다. 목적지 층입니다. "
+                              "앞으로 천천히 직진해 주세요. 문패를 찾아보겠습니다."]
+    assert recs[0]["action"] == "직진" and recs[0]["state"]["floor_src"] == "말"
+    assert "엘리베이터를" not in says(recs) and "엘리베이터가" not in says(recs) and nv.ASK_SAY not in says(recs)
+    assert all(r["action"] == "직진" for r in recs)
+
+
+def test_4f_start_to_1f_destination():
+    """4층에서 1층 목적지(105): 층을 모를 때는 엘리베이터 안내 없음. 4층으로 정해진 뒤에야 '1층을 누르세요'."""
+    script = [O(elev=EL, place="elev_hall")] * 6 + [O([("412", "C", 2.5, "door")])] + [O(elev=EL, place="elev_hall")] * 2
+    nav = nv.Navigator(ScriptRunner(script), "105")
+    nav.new_segment("1")
+    recs = run(nav, 9)
+    assert "엘리베이터를 타고" not in says(recs[:6]) and "목적지 층입니다" not in says(recs[:6])
+    assert recs[6]["state"]["floor"] == "4" and recs[6]["state"]["wrong_floor"]
+    assert "엘리베이터를 찾아 1층으로" in says(recs[6:7])
+    assert "엘리베이터를 타고 1층을 누르세요" in says(recs[7:]) and recs[-1]["action"] == "엘리베이터 타기"
+    # 출발 층을 말로 받으면 첫 걸음부터
+    nav = nv.Navigator(ScriptRunner([O(elev=EL, place="elev_hall")] * 3), "105", start_floor="4")
+    nav.new_segment("1")
+    recs = run(nav, 3)
+    assert "105호는 1층에 있습니다" in recs[0]["say"][0] and "엘리베이터를 타고 1층을 누르세요" in says(recs)
+
+
+def test_said_floor_then_two_other_plates():
+    """안내 중 "여기 4층이야": 바로 반영. 다른 층 확정 문패 한 번으로는 안 바뀌고, 연속 2번이면 문패를 따른다."""
+    nav = nv.Navigator(ScriptRunner([O()] * 6 + [O([("315", "C", 2.5, "door")])] * 2), "410")
+    nav.new_segment("1")
+    run(nav, 6)
+    out = nav.set_floor("4")
+    assert out[0].startswith("4층으로 알겠습니다. 목적지 층입니다") and nav.st["floor"] == "4" and nav.st["act"] == "직진"
+    recs = run(nav, 2)
+    assert recs[0]["state"]["floor"] == "4" and recs[1]["state"]["floor"] == "3"
+
+
+def test_floor_sign_at_start_sets_floor_at_once():
+    nav = nv.Navigator(ScriptRunner([O(floor_sign="4F", place="elev_hall")] + [O()] * 3), "410")
+    nav.new_segment("1")
+    recs = run(nav, 2)
+    assert recs[0]["state"]["floor"] == "4" and "4층" in says(recs[:1]) and "1층" not in says(recs)
+
+
+def test_in_elevator_display_sets_floor_and_carries_on_exit():
+    """엘리베이터 안 층 표시창(판 4 ed)이 또렷하면 바로 그 층. 내리기 직전에 읽었으면 내린 층의 임시 층 →
+    다른 층 확정 문패 한 번이면 문패를 따른다."""
+    ie = O(place="in_elev")
+    ie4 = dict(ie, elev_floor="4")
+    nav = nv.Navigator(ScriptRunner([ie] * 6 + [ie4] * 2), "410")
+    nav.new_segment("1")
+    recs = run(nav, 8)
+    assert recs[6]["state"]["floor"] == "4" and recs[6]["say"] == ["엘리베이터 표시창이 4층입니다. 목적지 층입니다."]
+    nav.runner = ScriptRunner([O(), O([("315", "C", 2.5, "door")])])
+    recs = run(nav, 2, seg="2")
+    assert recs[0]["state"]["floor"] == "4" and recs[0]["state"]["floor_temp"]
+    assert recs[0]["say"][0] == "엘리베이터에서 내렸습니다. 표시창으로는 4층입니다. 문패를 확인하며 천천히 이동하세요."
+    assert recs[1]["state"]["floor"] == "3" and recs[1]["state"]["wrong_floor"]
+
+
+def test_clean_elevator_display():
+    o = cp.clean({"plates": [], "fs": "", "ss": "", "place": "in_elev", "door": "none", "el": [], "arrows": [], "ed": "4"})
+    assert o["elev_floor"] == "4"
+    o = cp.clean({"plates": [], "fs": "", "ss": "", "place": "corridor", "door": "none", "el": [], "arrows": [], "ed": "4"})
+    assert o["elev_floor"] is None
+    assert cp.floor_of_display("B1") == "B1" and cp.floor_of_display("12F") == "12" and cp.floor_of_display("▲") is None

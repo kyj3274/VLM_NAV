@@ -243,3 +243,38 @@ def test_quick_confirm_off_by_default(tmp_path):
     sid = c.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
     rs = [frame(c, sid, 1.5 * k) for k in range(25)]
     assert not any(r.get("confirm") for r in rs) and any(r["arrived"] for r in rs)
+
+
+# ---------------------------------------------------------------- 2026-11-23
+def test_start_floor_from_speech_and_here_floor(tmp_path):
+    c, _ = app_with(tmp_path)
+    r = c.post("/api/session", headers=H, json={"destination": "4층인데 410호 가고 싶어"}).json()
+    assert r["status"] == "ok" and r["target"] == "410" and r["floor"] == "4"
+    assert r["say"] == ["410호로 안내하겠습니다. 지금 4층에서 출발합니다."]
+    sid = r["session_id"]
+    f = frame(c, sid, 0.0)
+    assert f["floor"] == "4" and "지금 4층입니다. 앞에 유리문이 있습니다" in f["say"][0]
+    # 안내 중 길게 눌러 "여기 3층이야" → 지금 층으로 바로
+    r = c.post(f"/api/session/{sid}/destination", headers=H, json={"destination": "여기 3층이야"}).json()
+    assert r["status"] == "ok" and r["kind"] == "floor" and r["floor"] == "3" and r["target"] == "410"
+    assert r["say"][0].startswith("3층으로 알겠습니다. 410호는 4층에 있습니다")
+    # "4층에서 105호": 목적지와 지금 층을 함께
+    r = c.post(f"/api/session/{sid}/destination", headers=H, json={"destination": "4층에서 105호"}).json()
+    assert r["target"] == "105" and r["floor"] == "4" and "1층" in " ".join(r["say"])
+    # 층도 호실도 없으면 다시 말해 달라고
+    assert c.post(f"/api/session/{sid}/destination", headers=H, json={"destination": "음"}).json()["status"] == "retry"
+
+
+def test_voice_here_floor_whisper(tmp_path):
+    c, _ = app_with(tmp_path, transcriber=FakeTranscriber("사층이요"))
+    sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
+    r = c.post(f"/api/session/{sid}/voice", headers=H, files={"audio": ("v.m4a", b"x" * 100, "audio/mp4")}).json()
+    assert r["kind"] == "floor" and r["floor"] == "4" and r["heard"] == "사층이요"
+
+
+@pytest.mark.parametrize("text,here", [
+    ("4층인데 410호 가고 싶어", "4"), ("4층에서 410호", "4"), ("사층에서 사백십호", "4"), ("일층인데 사백십호", "1"),
+    ("4층 410호로 가고 싶어", None), ("410호로 가고 싶어", None), ("지하1층에서 105호", "B1")])
+def test_parse_here_floor_with_destination(text, here):
+    from dest_parse import parse_destination
+    assert parse_destination(text)["here"] == here
