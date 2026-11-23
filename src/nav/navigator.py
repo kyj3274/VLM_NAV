@@ -156,6 +156,14 @@ class Navigator:
         st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
                   elevator_said=False, el_approach=False, el_ready=None, quick_asked=False, quick_n=0,
                   el_cand=None, el_passed=False)
+        # PR #1 리뷰 3: 이전 목적지로 가던 중 한 번의 호출로 확정된 문패가 새 목적지이면 확정을 풀고
+        # '서로 다른 호출 2번' 기준으로 다시 검사한다 (FORGET초 넘게 안 보였으면 호출 수는 0으로 봄).
+        p = self.mem.get(target)
+        if p and p["ok"]:
+            calls = p["calls"] if self.clock - p["last"] <= nav_memory.FORGET else 0
+            if calls < nav_memory.TARGET_CALLS:
+                p.update(ok=False, ok_t=None, wait_calls=True)
+                self.mem.event(self.clock, f"{target}호 확정 풀림 (새 목적지: 서로 다른 호출 {nav_memory.TARGET_CALLS}번 필요, 지금 {calls}번)")
         self.mem.event(self.clock, f"목적지 변경: {target}")
         if st["floor"] is not None:
             st["wrong_floor"] = bool(self.tf) and st["floor"] != self.tf

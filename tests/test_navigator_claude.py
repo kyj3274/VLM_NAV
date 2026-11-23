@@ -515,3 +515,28 @@ def test_review1_floor_move_expires_after_stairs():
     assert recs[off]["t"] - recs[1]["t"] == nv.FLOOR_MOVE_HOLD
     assert recs[-2]["state"]["floor"] == "1" and recs[-1]["state"]["floor"] == "1"
     assert any("층 이동 가능 끔" in e["text"] for e in nav.mem.events)
+
+
+def test_review3_target_change_needs_two_calls_again():
+    """410으로 가던 중 한 번의 호출로 확정된 315(읽기+재확인 일치)는 목적지를 315로 바꾸면 확정이 풀린다."""
+    nav = nv.Navigator(ScriptRunner([O([("315", "C", 2.5, "door")]), O()] + [O()] * 7 + [O([("315", "C", 2.5, "door")])]), "410")
+    exited(nav)
+    recs = run(nav, 2)
+    assert "315" in nav.mem.confirmed() and nav.mem.get("315")["calls"] == 1
+    nav.set_target("315")
+    assert "315" not in nav.mem.confirmed()
+    recs = run(nav, 1)
+    assert recs[0]["rooms"] == [] and not recs[0]["state"]["target_seen"]
+    # 6초(FORGET) 넘게 지난 뒤 다시 읽힌 한 번은 첫 호출로 다시 셈 → 아직 '확인 중'
+    recs = run(nav, 7)
+    assert recs[-1]["rooms"] == [] and recs[-1].get("target_pending") and "315" not in nav.mem.confirmed()
+
+
+def test_review3_target_change_second_call_confirms():
+    nav = nv.Navigator(ScriptRunner([O([("315", "C", 2.5, "door")])] * 3), "410")
+    exited(nav)
+    run(nav, 1)
+    nav.set_target("315")
+    assert "315" not in nav.mem.confirmed()
+    r = run(nav, 1)[0]
+    assert r["rooms"] == ["315"] and nav.mem.get("315")["calls"] == 2  # 서로 다른 호출 2번 → 확정
