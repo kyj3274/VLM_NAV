@@ -246,6 +246,57 @@ def test_quick_confirm_off_by_default(tmp_path):
 
 
 # ---------------------------------------------------------------- 2026-11-23
+def scripted_factory(scenes, delays):
+    """호출 순서마다 장면과 기다리는 초를 정한 가짜. scenes[i]는 짧은 키 형식 인식 결과."""
+    def factory(target, limit):
+        lock, n = threading.Lock(), [0]
+
+        def responder(kind, content, _n):
+            if kind != "see":
+                return {"n": "", "name": ""}
+            with lock:
+                i = n[0]
+                n[0] += 1
+            time.sleep(delays[min(i, len(delays) - 1)])
+            return scenes[min(i, len(scenes) - 1)]
+        cl = FakeClient(responder, credit=0.18)
+        cl.ledger = Ledger(limit)
+        return cl
+    return factory
+
+
+BASE = {"plates": [], "fs": "", "place": "corridor", "door": "none", "el": [], "arrows": []}
+
+
+def test_review2_exited_drops_photos_from_before(tmp_path):
+    """'내렸어요' 때 처리 중이던 엘리베이터 안 사진(1F 표시)은 새 구간 첫 걸음으로 들어가지 않는다.
+    눌렀을 때 이미 찍었지만 늦게 보낸 사진(seg=0)도 버린다."""
+    inside = {**BASE, "place": "in_elev", "fs": "1F"}
+    factory = scripted_factory([inside, {**BASE, "fs": "4F"}], [0.6, 0.0])
+    c, _ = app_with(tmp_path, factory=factory)
+    sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
+    out = {}
+    th = threading.Thread(target=lambda: out.__setitem__(1, frame(c, sid, 0.0)))
+    th.start()
+    time.sleep(0.15)
+    r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
+    assert r["seg"] == 1
+    th.join()
+    assert out[1]["status"] == "stale" and out[1]["reason"] == "old_segment"
+    late = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
+                  data={"t": "0.5", "seg": "0"}).json()
+    assert late["status"] == "stale" and late["reason"] == "old_segment"
+    new = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
+                 data={"t": "2.0", "seg": "1"}).json()
+    assert new["status"] == "ok" and new["seg"] == 1
+    assert new["say"][0].startswith("엘리베이터에서 내렸습니다")  # 새 구간의 첫 걸음은 이 사진
+    m = c.get(f"/api/session/{sid}", headers=H).json()["detail"]
+    assert m["counts"]["old_segment"] == 2 and m["counts"]["applied"] == 1
+    ws = c.app.state.sessions[sid]
+    assert ws.nav.st["floor"] == "4" and ws.nav.records[-1]["state"]["floor"] == "4"
+    assert all(r["seq"] != "live_0" or r["web_seq"] != 1 for r in ws.nav.records if "web_seq" in r)
+
+
 def test_start_floor_from_speech_and_here_floor(tmp_path):
     c, _ = app_with(tmp_path)
     r = c.post("/api/session", headers=H, json={"destination": "4층인데 410호 가고 싶어"}).json()

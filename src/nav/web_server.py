@@ -98,7 +98,9 @@ class WebSession:
     seq: int = 0
     inflight: int = 0
     last_applied: int = 0
-    counts: dict = field(default_factory=lambda: {"sent": 0, "busy": 0, "stale": 0, "applied": 0, "errors": 0})
+    seg: int = 0                       # 구간 번호 ("내렸어요"마다 1 증가). 사진은 받은 때의 구간 번호를 달고, 다르면 버림
+    counts: dict = field(default_factory=lambda: {"sent": 0, "busy": 0, "stale": 0, "applied": 0, "errors": 0,
+                                                  "old_segment": 0})
     applied_at: list = field(default_factory=list)
     last: dict | None = None
     last_frame: Path | None = None
@@ -326,20 +328,30 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     # ------------------------------------------------------------ 사진 (겹쳐 보내기)
     @app.post("/api/session/{sid}/frame", dependencies=[Depends(check_code)])
     def frame(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
-              steps: int | None = Form(None), client: str = Form("{}")):
-        return process(get_ws(sid), image, t, heading, steps, client, quick=False)
+              steps: int | None = Form(None), client: str = Form("{}"), seg: int | None = Form(None)):
+        return process(get_ws(sid), image, t, heading, steps, client, quick=False, seg=seg)
 
     @app.post("/api/session/{sid}/confirm", dependencies=[Depends(check_code)])
     def confirm(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
-                steps: int | None = Form(None), client: str = Form("{}")):
+                steps: int | None = Form(None), client: str = Form("{}"), seg: int | None = Form(None)):
         """문 앞 빠른 확인 (2026-11-19 사용자 지시 4). 응답에 confirm이 오면 휴대폰이 곧바로 찍어 보낸다.
         가장 가까운 문패 번호만 읽는 짧은 호출 → 같은 순서 규칙(seq)으로 상태에 넣는다. 동시 한도에 하나 더 허용."""
-        return process(get_ws(sid), image, t, heading, steps, client, quick=True)
+        return process(get_ws(sid), image, t, heading, steps, client, quick=True, seg=seg)
 
-    def process(ws: WebSession, image, t, heading, steps, client, quick):
+    def old_segment(ws: WebSession, seq: int, seg: int, t, why: str):
+        ws.counts["old_segment"] += 1
+        ws.log({"event": "old_segment", "web_seq": seq, "seg": seg, "now_seg": ws.seg, "t": t, "why": why})
+        return {"status": "stale", "seq": seq, "say": [], "reason": "old_segment"}
+
+    def process(ws: WebSession, image, t, heading, steps, client, quick, seg=None):
+        """seg: 휴대폰이 사진을 찍을 때의 구간 번호 ("내렸어요"를 누른 횟수). PR #1 리뷰 2: 내리기 전에 찍은 사진
+        (엘리베이터 안, 이전 층)이 새 구간 첫 걸음으로 들어가지 않게, 휴대폰 구간 번호가 서버 구간보다 작거나
+        받은 때와 상태에 넣을 때의 서버 구간이 다르면 버린다."""
         recv = time.monotonic()
         if ws.stopped:
             return {"status": "stopped", "say": [], "reason": ws.stop_reason}
+        if seg is not None and seg < ws.seg:
+            return old_segment(ws, 0, seg, t, "찍을 때 구간이 이전")
         reason = limit_reason(ws)
         if reason:
             return stop(ws, reason)
@@ -350,6 +362,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
             ws.inflight += 1
             ws.seq += 1
             seq = ws.seq
+            seg_at = ws.seg
             ws.counts["sent"] += 1
         try:
             path = ws.dir / "frames" / f"{seq:05d}{'_q' if quick else ''}.jpg"
@@ -389,6 +402,9 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                     rechecked = (None, None, None)
             ready = time.monotonic()
             with ws.alock:
+                if seg_at != ws.seg:  # 처리하는 동안 "내렸어요" (리뷰 2)
+                    sync_credit(ws)
+                    return old_segment(ws, seq, seg_at, t_cap, "처리 중 내림")
                 if seq <= ws.last_applied or ws.stopped:  # 더 나중에 보낸 결과를 이미 넣었음
                     ws.counts["stale"] += 1
                     sync_credit(ws)
@@ -421,7 +437,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                                                     encoding="utf-8")
                 sync_credit(ws)
                 st = rec["state"]
-                reply = {"status": "ok", "seq": seq, "ask_floor": bool(rec.get("ask_floor")),
+                reply = {"status": "ok", "seq": seq, "seg": ws.seg, "ask_floor": bool(rec.get("ask_floor")),
                          "say": rec["say"], "action": rec["action"], "floor": st.get("floor"),
                          "arrived": st.get("arrived"), "rooms": rec["rooms"], "error": rec["error"],
                          "server_s": rec["server_s"], "see_s": rec["see_s"], "credit": ws.credit,
@@ -444,14 +460,18 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 if not ws.nav.records:  # 사진을 보내기 전에 눌러도 층이 바뀐 것으로 (새 구간)
                     ws.nav.seg_n = 1
                 ws.nav.new_segment(f"live_{ws.nav.si + 1}")
+                # 리뷰 2: 지금까지 보낸 사진은 모두 이전 구간 → 결과가 와도 버린다 (구간 번호 + last_applied 둘 다)
+                ws.seg += 1
+                ws.last_applied = ws.seq
                 carry = ws.nav.st["floor"]
                 say = ["엘리베이터에서 내렸습니다. " + (f"표시창으로는 {carry}층입니다. 문패로 확인하겠습니다."
                                                     if carry else "지금 층을 확인하겠습니다.")]
             elif body.type in ("end", "stop"):
                 ws.stopped, ws.stop_reason = True, {"end": "사용자가 끝냄", "stop": "관찰자 비상 정지"}[body.type]
                 say = ["안내를 마칩니다."] if body.type == "end" else ["안내를 멈췄습니다."]
-        ws.log({"event": body.type, "wall": wall(), "t": ws.nav.clock, "segment": ws.nav.si, **body.detail})
-        return {"status": "ok", "say": say, "segment": ws.nav.si}
+        ws.log({"event": body.type, "wall": wall(), "t": ws.nav.clock, "segment": ws.nav.si, "seg": ws.seg,
+                "last_applied": ws.last_applied, **body.detail})
+        return {"status": "ok", "say": say, "segment": ws.nav.si, "seg": ws.seg}
 
     # ------------------------------------------------------------ 관찰자·기록
     @app.get("/api/monitor", dependencies=[Depends(check_code)])

@@ -372,7 +372,7 @@ $('dest-form').addEventListener('submit', (e) => {
 // ---------------------------------------------------------------- 안내 화면
 function startGuidance() {
   $('dest-page').hidden = true; $('setup').hidden = true; $('guide').hidden = false;
-  S.t0 = now(); S.lastSeq = 0; S.inflight = 0; S.sent = 0; S.localBusy = 0; S.lastAppliedAt = now(); S.slowSaid = false;
+  S.t0 = now(); S.lastSeq = 0; S.seg = 0; S.inflight = 0; S.sent = 0; S.localBusy = 0; S.lastAppliedAt = now(); S.slowSaid = false;
   S.lastAction = ''; S.guide = new SensorGuide();
   const v = $('video');
   if (fileMode()) { S.fileIdx = 0; playFile(0); }
@@ -393,6 +393,7 @@ $('video').addEventListener('ended', async () => {
   if (!S.running || !fileMode()) return;
   if (S.fileIdx + 1 < S.files.length) {   // 다음 파일 = 엘리베이터에서 내린 뒤
     S.fileIdx += 1;
+    S.seg += 1;
     await sendEvent('exited', { file: S.files[S.fileIdx].name });
     playFile(S.fileIdx);
   } else {
@@ -468,14 +469,14 @@ function grabFull() {   // 원본 해상도 그대로 (줄이지 않음: 문패 
 }
 const toJpeg = (canvas) => new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9));
 async function bestFrame() {   // 1.5초 동안 6장을 보고 가장 선명한 장
-  let best = null, bestS = -1, at = null, heading = null;
+  let best = null, bestS = -1, at = null, heading = null, seg = S.seg;
   const tb = now();
   for (let i = 0; i < S.shots && S.running && !S.listening; i++) {
     const s = sharpness();
-    if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; }
+    if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; seg = S.seg; }
     await sleep(S.intervalMs / S.shots);
   }
-  return best && best.width ? { canvas: best, t: at, heading, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 } : null;
+  return best && best.width ? { canvas: best, t: at, heading, seg, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 } : null;
 }
 async function loop() {
   S.loopActive = true;
@@ -498,7 +499,7 @@ async function quickConfirm() {   // 문 앞 빠른 확인: 다음 1.5초를 기
     if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; }
     if (i === 0) await sleep(120);
   }
-  if (best && best.width && S.running) sendFrame({ canvas: best, t: at, heading, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 }, 'confirm');
+  if (best && best.width && S.running) sendFrame({ canvas: best, t: at, heading, seg: S.seg, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 }, 'confirm');
 }
 async function sendFrame(f, kind) {
   S.inflight++; S.sent++;
@@ -509,6 +510,7 @@ async function sendFrame(f, kind) {
   const encMs = now() - te;
   fd.append('image', blob, 'frame.jpg');
   fd.append('t', f.t.toFixed(2));
+  fd.append('seg', String(f.seg ?? S.seg));   // 찍을 때의 구간 번호: '내렸어요' 전에 찍은 사진은 서버가 버림 (PR #1 리뷰 2)
   if (f.heading !== null) fd.append('heading', f.heading.toFixed(1));
   if (S.guide) fd.append('steps', String(S.guide.steps));
   const t0 = now();
@@ -593,7 +595,7 @@ $('repeat').addEventListener('click', () => {
   say(S.lastSpeech || '아직 안내가 없습니다.', { force: true });
   if (S.sid) postJSON(`/api/session/${S.sid}/event`, { type: 'repeat' }).catch(() => {});
 });
-$('exited').addEventListener('click', () => { unlockAudio(); CUE.stage(); sendEvent('exited'); });
+$('exited').addEventListener('click', () => { unlockAudio(); CUE.stage(); S.seg += 1; sendEvent('exited'); });
 $('end').addEventListener('click', async () => { unlockAudio(); await sendEvent('end'); stopGuidance(); });
 for (const id of ['dest-page', 'guide']) {
   $(id).addEventListener('pointerdown', onHoldDown);
