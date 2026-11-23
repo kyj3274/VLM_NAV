@@ -20,7 +20,11 @@ const S = {
   holding: false, holdStart: 0, holdTimer: null, voiceMode: null, rec: null, recState: null,
   files: [], fileIdx: 0, t0: 0, inflight: 0, lastSeq: 0, lastAppliedAt: 0, lastRtt: null, slowSaid: false,
   failSpoken: false, sent: 0, localBusy: 0, lastReply: null, notified: {}, guide: null, lastAction: '',
-  intervalMs: 1500, shots: 6, maxInflight: 3, slowWarnMs: 8000, maxHoldMs: 8000, minHoldMs: 400, minPeakRms: 0.01,
+  intervalMs: 1500, shots: 6, maxInflight: 2, slowWarnMs: 8000, maxHoldMs: 8000, minHoldMs: 400, minPeakRms: 0.01,
+  // 2026-11-23 판단 시간 줄이기: JPEG 품질 0.7(해상도 그대로), 선명도 sharpMin 이상이면 구간 시작 minSendMs 뒤 바로 보냄
+  //   sharpMin 320 = 지난 휴대폰 시험에서 문패 번호가 읽힌 사진 17장의 최솟값(327) 바로 아래 (같은 계산, 160px 흑백 라플라시안 분산)
+  // 빠른 확인: 응답에 confirm이 오면 quickGapMs 간격으로 선명한 2장을 찍어 동시에 보냄 (한 장당 최대 quickWaitMs 기다림)
+  jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false,
 };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -327,7 +331,7 @@ function sessionMeta() {
   return { camera: { label: S.cameraLabel, ultrawide: $('ultrawide').checked, quality: $('quality').value, probe: S.camInfo,
     ultra_by: $('ultrawide').checked ? (S.ultrawideId ? 'device' : S.zoomMin ? `zoom ${S.zoomMin}` : 'none') : null },
     device: { ua: navigator.userAgent, orientation: S.oriOk, motion: S.motionOk, voice: voiceMode() },
-    mode: fileMode() ? 'file' : 'camera', files: S.files.map((f) => f.name) };
+    mode: fileMode() ? 'file' : 'camera', files: S.files.map((f) => f.name), quick_confirm: $('quickconf').checked };
 }
 async function submitText(text, source, ms) {
   try {
@@ -467,16 +471,25 @@ function grabFull() {   // 원본 해상도 그대로 (줄이지 않음: 문패 
   c.getContext('2d').drawImage(v, 0, 0);
   return c;
 }
-const toJpeg = (canvas) => new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9));
-async function bestFrame() {   // 1.5초 동안 6장을 보고 가장 선명한 장
-  let best = null, bestS = -1, at = null, heading = null, seg = S.seg;
+const toJpeg = (canvas) => new Promise((r) => canvas.toBlob(r, 'image/jpeg', S.jpegQ));
+async function bestFrame() {   // 1.5초 구간에서 가장 선명한 장. 선명도 기준 이상이 나오면 (구간 시작 0.5초 뒤부터) 바로 보냄
+  // 기준 이상인 장 중 가장 최근 장을 보낸다 (구간 처음에 찍은 장이 0.5초를 기다려 묵지 않게)
+  let best = null, bestS = -1, at = null, heading = null, seg = S.seg, fresh = null;
   const tb = now();
   for (let i = 0; i < S.shots && S.running && !S.listening; i++) {
     const s = sharpness();
-    if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; seg = S.seg; }
+    if (s > bestS || s >= S.sharpMin) {
+      const shot = { canvas: grabFull(), t: (now() - S.t0) / 1000, heading: S.heading, seg: S.seg, sharp: Math.round(s) };
+      if (s > bestS) { bestS = s; best = shot.canvas; at = shot.t; heading = shot.heading; seg = shot.seg; }
+      if (s >= S.sharpMin) fresh = shot;
+    }
+    if (now() - tb >= S.minSendMs && fresh) {
+      return { ...fresh, start: tb, early: true, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 };
+    }
     await sleep(S.intervalMs / S.shots);
   }
-  return best && best.width ? { canvas: best, t: at, heading, seg, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 } : null;
+  return best && best.width ? { canvas: best, t: at, heading, seg, start: tb, sharp: Math.round(bestS), early: false,
+    pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 } : null;
 }
 async function loop() {
   S.loopActive = true;
@@ -486,20 +499,32 @@ async function loop() {
       const f = await bestFrame();
       if (!S.running) break;
       if (!f || S.listening) { await sleep(200); continue; }
-      if (S.inflight >= S.maxInflight) { S.localBusy++; continue; }   // 동시 3개면 이번 장은 보내지 않음
-      sendFrame(f);   // 기다리지 않음 (겹쳐 보내기)
+      if (S.inflight >= S.maxInflight) S.localBusy++;   // 동시 2개면 이번 장은 보내지 않음
+      else sendFrame(f);   // 기다리지 않음 (겹쳐 보내기)
+      const rest = f.start + S.intervalMs - now();   // 일찍 보내도 보내는 간격은 1.5초 그대로 (크레딧 같음)
+      if (rest > 0) await sleep(rest);
     }
   } finally { S.loopActive = false; }
 }
-async function quickConfirm() {   // 문 앞 빠른 확인: 다음 1.5초를 기다리지 않고 곧바로 2장 중 선명한 장을 보냄
-  let best = null, bestS = -1, at = null, heading = null;
+async function sharpShot(notBefore) {   // notBefore 뒤에 선명도 기준 이상인 장을 하나 (quickWaitMs 안에 없으면 null)
+  while (now() < notBefore) await sleep(20);
   const tb = now();
-  for (let i = 0; i < 2 && S.running; i++) {
+  while (S.running && now() - tb < S.quickWaitMs) {
     const s = sharpness();
-    if (s > bestS) { bestS = s; best = grabFull(); at = (now() - S.t0) / 1000; heading = S.heading; }
-    if (i === 0) await sleep(120);
+    if (s >= S.sharpMin) return { canvas: grabFull(), t: (now() - S.t0) / 1000, heading: S.heading, seg: S.seg, sharp: Math.round(s),
+      start: tb, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 };
+    await sleep(100);
   }
-  if (best && best.width && S.running) sendFrame({ canvas: best, t: at, heading, seg: S.seg, pickMs: now() - tb, pickEnd: (now() - S.t0) / 1000 }, 'confirm');
+  return null;
+}
+async function quickConfirm() {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
+  if (S.quickBusy || !$('quickconf').checked) return;
+  S.quickBusy = true;
+  try {
+    const a = await sharpShot(now());
+    const b = a ? await sharpShot(now() + S.quickGapMs) : null;
+    if (a && b && S.running) { sendFrame(a, 'confirm'); sendFrame(b, 'confirm'); }
+  } finally { S.quickBusy = false; }
 }
 async function sendFrame(f, kind) {
   S.inflight++; S.sent++;
@@ -517,6 +542,7 @@ async function sendFrame(f, kind) {
   // 지연 측정 (2026-11-19): 휴대폰 시계(시작부터 초)로 고르기 끝·인코딩·보낸 시각, 사진 용량, 바로 전에 끝난 요청의 왕복
   fd.append('client', JSON.stringify({ pick_ms: Math.round(f.pickMs), size: [f.canvas.width, f.canvas.height], inflight: S.inflight,
     pick_end: f.pickEnd != null ? +f.pickEnd.toFixed(3) : null, enc_ms: Math.round(encMs), bytes: blob.size,
+    sharp: f.sharp ?? null, early: !!f.early, jpeg_q: S.jpegQ,
     sent_at: +((t0 - S.t0) / 1000).toFixed(3), prev: S.prevNet }));
   try {
     const r = await api(`/api/session/${S.sid}/${kind === 'confirm' ? 'confirm' : 'frame'}`, { method: 'POST', body: fd, timeout: 30000 });
@@ -668,7 +694,7 @@ $('to-dest').addEventListener('click', () => {
 $('open-setup').addEventListener('click', showSetup);
 $('files').addEventListener('change', () => { S.files = [...$('files').files]; renderModeLine(); });
 $('clear-files').addEventListener('click', () => { S.files = []; $('files').value = ''; renderModeLine(); });
-for (const id of ['quality', 'slowwarn', 'sensors']) {
+for (const id of ['quality', 'slowwarn', 'sensors', 'quickconf']) {
   const v = load('nav_' + id);
   if (v !== null) { if ($(id).type === 'checkbox') $(id).checked = v === '1'; else $(id).value = v; }
   $(id).addEventListener('change', () => save('nav_' + id, $(id).type === 'checkbox' ? ($(id).checked ? '1' : '0') : $(id).value));

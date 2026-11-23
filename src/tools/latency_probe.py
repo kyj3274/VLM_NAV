@@ -1,18 +1,18 @@
-"""지연 원인 확인 (2026-11-19 사용자 지시 2). 휴대폰 시험 인식 2.9초·재확인 3.5~4초가 영상 시험(1.3초·1.0초)보다 긴 이유.
-같은 맥·같은 게이트웨이에서 조건 하나씩 바꿔 부른다 (크레딧 씀, 한도 --credit-limit).
+"""지연 원인 실험 (2026-11-23 사용자 지시 A1. 2026-11-19 판의 조건 A~E는 git 기록에 있음).
+같은 맥·같은 게이트웨이에서 조건 하나씩 바꿔 인식 호출을 한다 (캐시 안 씀, 크레딧 씀, 한도 --credit-limit).
 
-  A 휴대폰 사진 원본(지금처럼 품질 90 재인코딩)       × 3, 차례로
-  B 같은 휴대폰 사진을 품질 75로                      × 3, 차례로   → 보내는 용량 차이
-  C 영상 사진(같은 720×1280)                          × 3, 차례로   → 장면·용량 차이
-  D 휴대폰 사진의 문패 재확인 조각(--crop 사진, --box 상자) × 3, 차례로
-  E 휴대폰 사진 3장을 동시에 (+ 재확인 1개 동시)       × 1          → 동시 호출(겹쳐 보내기) 영향
-캐시는 쓰지 않는다(매번 실제 호출). 결과: outputs/probe/latency_<시각>.json
+  용량  (동시 0, 차례로) 휴대폰 사진 3장 × 3가지
+        orig  휴대폰이 올린 파일 그대로 (재인코딩 없음)
+        q70   JPEG 품질 70으로 다시 저장 (휴대폰 품질 0.7에 해당)
+        q80   JPEG 품질 80 = 영상 사진 수준(약 90~100KB)
+  동시  q80 사진으로, 함께 도는 다른 호출 수 1 (2개 동시) × 2번, 2 (3개 동시) × 1번
+해상도는 모두 원본 720×1280. 각 호출의 읽은 문패도 남겨 품질별 판독을 비교한다.
+결과: outputs/probe/latency_<시각>.json
 
-  .venv/bin/python src/tools/latency_probe.py --session outputs/web_sessions/<세션 폴더> --phone 33,35,38 \
-      --crop 36 --box 34,25,44,29 --dry-run            # 호출 없이 크기·횟수만
-  (같은 인자에 --credit-limit 4 를 주고 --dry-run 을 빼면 실제 호출)
+  .venv/bin/python src/tools/latency_probe.py --session outputs/web_sessions/<세션> --frames 69,80,81 --dry-run
 """
 import argparse
+import base64
 import io
 import json
 import statistics
@@ -25,71 +25,71 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nav"))
 from PIL import Image  # noqa: E402
 
 import claude_perceiver as cp  # noqa: E402
-from claude_client import DryRunClient, GatewayClient, Ledger, ROOT, jpeg_block  # noqa: E402
+from claude_client import GatewayClient, Ledger, ROOT  # noqa: E402
 
-VIDEO = [ROOT / "data/video/frames_8fps/2a_after_elevator_졸프_영상1" / f"i{i:04d}.jpg" for i in (100, 140, 180)]
-
-
-def block(path, quality):
-    b = io.BytesIO()
-    Image.open(path).convert("RGB").save(b, "JPEG", quality=quality)
-    img = Image.open(io.BytesIO(b.getvalue()))
-    return jpeg_block(img, quality=quality), len(b.getvalue())
+PER_CALL = 0.19  # 크레딧 추정 (휴대폰 사진 인식 1번, 지난 기록 중앙값 근처)
 
 
-def see(c, path, quality=90):
-    blk, n = block(path, quality)
-    r = c.call(cp.SYSTEM, [blk, {"type": "text", "text": "보이는 것을 적어라."}], cp.SEE_SCHEMA, max_tokens=500, kind="see")
-    return {"kind": "see", "file": path.name, "q": quality, "bytes": n, "sec": r.seconds, "attempts": r.attempts,
-            "retry_wait": r.retry_wait, "in": r.input_tokens, "out": r.output_tokens, "cr": round(r.credit, 4), "err": r.error}
+def encode(path, q):
+    raw = Path(path).read_bytes()
+    if q != "orig":
+        b = io.BytesIO()
+        Image.open(io.BytesIO(raw)).convert("RGB").save(b, "JPEG", quality=int(q))
+        raw = b.getvalue()
+    return raw
 
 
-def recheck(c, crop_frame, box):
-    p = cp.Perceiver(c)
+def see(c, path, q):
+    raw = encode(path, q)
+    blk = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(raw).decode()}}
+    system = cp.SYSTEM + cp.ED_RULE
+    schema = {**cp.SEE_SCHEMA, "properties": {**cp.SEE_SCHEMA["properties"], "ed": cp._S},
+              "required": [*cp.SEE_SCHEMA["required"], "ed"]}
     t0 = time.monotonic()
-    rc = p.recheck(str(crop_frame), {"n": "", "name": "", "box": box})
-    log = rc["call"]
-    return {"kind": "recheck", "read": rc["n"], "sec": log.get("seconds", round(time.monotonic() - t0, 3)),
-            "attempts": log.get("attempts"), "in": log.get("input_tokens"), "out": log.get("output_tokens"),
-            "cr": round(log.get("credit") or 0, 4), "err": log.get("error")}
+    r = c.call(system, [blk, {"type": "text", "text": "보이는 것을 적어라."}], schema, max_tokens=500, kind="see")
+    wall = time.monotonic() - t0
+    plates = [(p.get("n"), p.get("m")) for p in (r.data or {}).get("plates", [])]
+    return {"file": Path(path).name, "q": q, "kb": round(len(raw) / 1000), "sec": round(r.seconds or wall, 3),
+            "attempts": r.attempts, "in": r.input_tokens, "out": r.output_tokens, "cr": round(r.credit, 4),
+            "plates": plates, "err": r.error}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--session", required=True, help="웹 세션 폴더 (frames/ 아래 사진)")
-    ap.add_argument("--phone", default="33,35,38", help="인식에 쓸 사진 번호 3개 (쉼표)")
-    ap.add_argument("--crop", type=int, required=True, help="재확인 조각을 자를 사진 번호")
-    ap.add_argument("--box", required=True, help="문패 상자 왼,위,오,아래 (0~100)")
+    ap.add_argument("--session", required=True)
+    ap.add_argument("--frames", default="69,80,81", help="사진 번호 3개 (쉼표)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--credit-limit", type=float, default=4.0)
     a = ap.parse_args()
-    fr = Path(a.session) / "frames"
-    PHONE = [fr / f"{int(i):05d}.jpg" for i in a.phone.split(",")]
-    crop_frame, box = fr / f"{a.crop:05d}.jpg", [int(v) for v in a.box.split(",")]
+    fr = [Path(a.session) / "frames" / f"{int(i):05d}.jpg" for i in a.frames.split(",")]
+    plan = [("size", q, 0, [f]) for q in ("orig", "q70", "q80") for f in fr] + \
+           [("conc", "80", 1, fr[:2]), ("conc", "80", 1, fr[1:3]), ("conc", "80", 2, fr)]
+    n = sum(len(x[3]) for x in plan)
+    print(f"호출 {n}번, 예상 크레딧 약 {n * PER_CALL:.1f}")
+    for f in fr:
+        print(f.name, {q: f"{len(encode(f, q)) // 1000}KB" for q in ("orig", "70", "80")})
     if a.dry_run:
-        for f in PHONE + VIDEO:
-            print(f.name, "q90", block(f, 90)[1], "q75", block(f, 75)[1])
-        print("호출: A3 + B3 + C3 + D3 + E4 = 16번 (인식 13, 재확인 3+1)")
         return
     c = GatewayClient(timeout=30.0, ledger=Ledger(a.credit_limit))
     rows = []
-    for name, fn in [("A 휴대폰 q90", lambda i: see(c, PHONE[i], 90)), ("B 휴대폰 q75", lambda i: see(c, PHONE[i], 75)),
-                     ("C 영상 q90", lambda i: see(c, VIDEO[i], 90)), ("D 재확인", lambda i: recheck(c, crop_frame, box))]:
-        for i in range(3):
-            r = {"cond": name, **fn(i)}
-            rows.append(r)
-            print(json.dumps(r, ensure_ascii=False), flush=True)
-    with ThreadPoolExecutor(4) as ex:   # E: 동시에
-        futs = [ex.submit(see, c, f, 90) for f in PHONE] + [ex.submit(recheck, c, crop_frame, box)]
-        for f in futs:
-            r = {"cond": "E 동시 4개", **f.result()}
-            rows.append(r)
-            print(json.dumps(r, ensure_ascii=False), flush=True)
+    for kind, q, others, files in plan:
+        q = q if q in ("orig",) else q.lstrip("q")
+        if others == 0:
+            r = see(c, files[0], q)
+            rows.append({"cond": f"용량 {'orig' if q == 'orig' else 'q' + q}", "others": 0, **r})
+            print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
+        else:
+            with ThreadPoolExecutor(len(files)) as ex:
+                for r in [f.result() for f in [ex.submit(see, c, f, q) for f in files]]:
+                    rows.append({"cond": f"동시 {others}", "others": others, **r})
+                    print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
     summ = {}
     for r in rows:
-        summ.setdefault(r["cond"], []).append(r["sec"])
+        summ.setdefault(r["cond"], []).append(r)
+    print("\n| 조건 | 용량 중앙값 | 호출 시간 중앙값 | 각 호출 | 읽은 문패 |\n|---|---|---|---|---|")
     for k, v in summ.items():
-        print(f"{k}: 중앙값 {statistics.median(v):.2f}s ({', '.join(f'{x:.2f}' for x in v)})")
+        print(f"| {k} | {statistics.median(x['kb'] for x in v)}KB | {statistics.median(x['sec'] for x in v):.2f}s | "
+              f"{', '.join(f'{x['sec']:.2f}' for x in v)} | {'; '.join(str(x['plates']) for x in v)} |")
     print(f"크레딧 {c.ledger.total:.3f} ({c.ledger.calls}번)")
     out = ROOT / f"outputs/probe/latency_{time.strftime('%Y%m%d_%H%M%S')}.json"
     out.parent.mkdir(parents=True, exist_ok=True)

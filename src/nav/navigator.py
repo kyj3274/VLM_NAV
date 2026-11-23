@@ -53,7 +53,10 @@ STAIR_OFF = 4     # 계단이 아닌 장면이 이 장 연속이면 계단에서
 EL_MISS = 2       # 엘리베이터 후보를 본 뒤 이 장 연속 안 보이면 지나침 또는 취소 (2026-11-19 사용자 지시 9)
 EL_PASS_M = 2.5   # 지나침은 마지막에 옆(L/R) 이 거리 이내에서 보였을 때만. 더 멀리서 사라지면 그쪽으로 몸을 돌린 것으로 봄
                   # (영상 1층 11~13초: 오른쪽 4m 엘리베이터 쪽으로 돌 때 사라져 '지나쳤습니다'가 잘못 나와서)
-QUICK_MAX = 3     # 문 앞 빠른 확인(confirm_now)은 목적지 하나에 이 횟수까지 (2026-11-19 사용자 지시 4)
+QUICK_MAX = 2     # 빠른 확인(confirm_now)은 목적지 하나에 이 횟수(번마다 사진 2장)까지 (2026-11-23 사용자 지시 B5, 전에는 1장 × 3번)
+QUICK_M = 5.0     # 목적지 후보를 이 거리(m) 안에서 읽으면 빠른 확인 (2026-11-23 B3, 전에는 2m 안 '멈춰 주세요' 때)
+QUICK_SHOTS = 2   # 빠른 확인 한 번에 휴대폰이 찍어 보내는 사진 수 (0.4초 간격)
+QUICK_WAIT = 6.0  # 빠른 확인 사진이 이 초 안에 다 안 오면(흐림·실패) 기다리지 않음
 # 2026-11-23 사용자 지시: 1층 가정(VLM_NAV assume1)을 없앰. 층을 모르면 '모름'으로 두고 엘리베이터·계단 안내를 하지 않는다.
 #   (4층에서 시작해도 위치 파악 5초 뒤 1층으로 보고 "엘리베이터를 타고 4층을 누르세요"라고 했음)
 ASK_FLOOR_SEC = 15    # 구간 시작 뒤 이 초가 지나도 층을 모르면 "지금 몇 층인지 말씀해 주세요"
@@ -128,7 +131,7 @@ class Navigator:
                    "pending": None, "fs_last": None, "near_d": [], "trend_said": None, "target_seen": None,
                    "arr_run": 0, "last_say": 0, "loc": None, "door_phase": False, "door_gone": 0,
                    "arrow_last": None, "el_approach": False, "act": "멈추고 둘러보기", "maybe_said": False,
-                   "floor_move": None, "quick_asked": False, "quick_n": 0,
+                   "floor_move": None, "quick": None, "quick_n": 0,
                    "el_cand": None, "el_last": None, "el_miss": 0, "el_passed": False, "stair": new_stair(),
                    "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None,
                    "door_out": False}
@@ -156,7 +159,7 @@ class Navigator:
         self.target, self.tf = target, target[0] if ROOM.match(target) else None
         self.mem.target = target
         st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
-                  elevator_said=False, el_approach=False, el_ready=None, quick_asked=False, quick_n=0,
+                  elevator_said=False, el_approach=False, el_ready=None, quick=None, quick_n=0,
                   el_cand=None, el_passed=False)
         # PR #1 리뷰 3: 이전 목적지로 가던 중 한 번의 호출로 확정된 문패가 새 목적지이면 확정을 풀고
         # '서로 다른 호출 2번' 기준으로 다시 검사한다 (FORGET초 넘게 안 보였으면 호출 수는 0으로 봄).
@@ -217,7 +220,7 @@ class Navigator:
                            el_seen=False, el_ready=None, button=None, pending=None, fs_last=None, near_d=[],
                            trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None,
                            door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False,
-                           floor_move=None, quick_asked=False, quick_n=0, el_cand=None, el_last=None, el_miss=0,
+                           floor_move=None, quick=None, quick_n=0, el_cand=None, el_last=None, el_miss=0,
                            el_passed=False, stair=new_stair(), floor_temp=bool(carry),
                            floor_src="엘리베이터 표시창" if carry else None, ask_t=None, check_t=None, el_disp=None)
             if carry:
@@ -237,14 +240,8 @@ class Navigator:
         unread = [p for p in obs.get("unread", []) if p.get("box")]
         if unread and (st["floor"] is None or st["floor"] == tf):
             return unread[0], "번호 안 읽힌 문패"
-        if st["floor"] is None:
-            first = [p for p in plates if ROOM.match(p["n"])]
-            if first:
-                return first[0], "층을 정할 번호"
-        elif plates:
-            other = [p for p in plates if ROOM.match(p["n"]) and p["n"][0] != st["floor"]]
-            if other:
-                return other[0], "층 충돌 번호"
+        # (2026-11-23 사용자 지시 A2) '층을 정할 번호'·'층 충돌 번호' 재확인은 하지 않는다: 목적지 후보와 번호를 못 읽은
+        # 문패만. 재확인이 있던 걸음은 찍은 뒤 반영까지 중앙값 4.26초(없을 때 3.05초, 휴대폰 기록 200장).
         return None, None
 
     @staticmethod
@@ -296,6 +293,8 @@ class Navigator:
         note["credit_all"] = o["call"].get("credit") or 0.0  # 캐시에서 온 호출도 포함한 이 초의 크레딧
         obs = o["obs"]
         if obs is None:  # 호출 실패: 시간 초과면 멈춤 안내, 상태는 그대로
+            if quick and st["quick"]:
+                self._quick_result(None, say)
             err = o["call"].get("error")
             if o["call"].get("timed_out"):
                 say.append("잠시 멈춰 주세요.")
@@ -388,6 +387,15 @@ class Navigator:
             if rec["ok"] and rflag.get(p["n"]) is not False:
                 rooms.append(p["n"])
                 src[p["n"]] = p
+        # 빠른 확인 사진이 목적지를 읽음 (2026-11-23 B4): 서로 다른 사진 2장(호출 2번)이면 믿음 점수와 상관없이 확정
+        if quick and st["quick"] and target not in rooms:
+            tp = next((p for p in plates if p["n"] == target), None)
+            rec = self.mem.get(target)
+            if tp and rec and not rec["ok"] and rec["calls"] >= nav_memory.TARGET_CALLS:
+                rec.update(ok=True, ok_t=clock, wait_calls=False)
+                self.mem.event(clock, f"{target}호 문패 확정 (빠른 확인, 서로 다른 사진 {rec['calls']}장)")
+                rooms.append(target)
+                src[target] = tp
         rooms = [x for x in rooms if ROOM.match(x)] + [x for x in rooms if not ROOM.match(x)]
 
         # ---- 계단 (2026-11-19 사용자 지시 3·4·5)
@@ -685,7 +693,8 @@ class Navigator:
             note.update(target_side=side, target_distance_m=m)
             if st["arrived"]:
                 pass  # 도착 안내는 한 번만 (겹쳐 보내기로 도착 뒤에 들어온 사진이 다시 말하지 않게, 2026-11-19)
-            elif st["arr_run"] >= 2:
+            elif st["arr_run"] >= 2 or (quick and close):
+                # 빠른 확인 사진(B4): 서로 다른 사진 2장으로 확정됐고 이 사진에서 2m 안이면 그 자리에서 도착
                 where = {"C": "정면에", "L": "왼쪽 앞에", "R": "오른쪽 앞에"}[side]
                 # 도착하는 걸음에는 도착 문장만 (같은 걸음의 층 확인·'문패를 찾겠습니다'와 섞이지 않게, 2026-11-19)
                 say[:] = [f"{where} {target}{'호' if ROOM.match(target) else ''} 문이 있습니다."]
@@ -699,13 +708,20 @@ class Navigator:
                 st["act"] = "목적지 접근"
         elif not maybe:
             st["arr_run"] = 0
-        # 문 앞 빠른 확인 (2026-11-19 사용자 지시 4): 목적지가 2m 안에서 처음 보이면("멈춰 주세요") 다음 전송을
-        # 기다리지 않고 휴대폰이 곧바로 새 사진을 찍어 짧은 확인 호출을 하도록 알린다(웹 /confirm). 맞으면 그 걸음에 도착.
-        if st["arr_run"] == 0:
-            st["quick_asked"] = False
-        elif st["arr_run"] == 1 and not st["arrived"] and not st["quick_asked"] and st["quick_n"] < self.quick_max:
+        # 빠른 확인 (2026-11-23 사용자 지시 B3~B5): 목적지 후보를 5m 안에서 읽으면 휴대폰이 곧바로 0.4초 간격으로
+        # 사진 2장을 찍어 동시에 보낸다(웹 /confirm). 2장은 각각 다른 호출(다른 사진)로 친다. 하나라도 목적지를 읽으면
+        # 서로 다른 사진 2장 기준으로 확정, 2m 안이면 도착. 둘 다 다른 번호를 읽으면 후보 취소. 목적지 하나에 최대 2번.
+        q = st["quick"]
+        if quick and q:
+            self._quick_result(plates, say)
+        elif q and clock - q["t"] > QUICK_WAIT:
+            st["quick"] = None
+        read_m = (tgt or {}).get("m") if tgt else pend_m
+        if (not quick and (tgt or maybe) and not st["arrived"] and st["quick"] is None and st["quick_n"] < self.quick_max
+                and read_m is not None and read_m <= QUICK_M
+                and (st["quick_n"] == 0 or maybe or read_m <= ARRIVE_M)):
             note["confirm_now"] = True
-            st["quick_asked"] = True
+            st["quick"] = {"t": clock, "got": 0, "hit": False, "other": 0}
             st["quick_n"] += 1
 
         # ---- 화살표 기록 (2초 연속 같은 방향일 때 사건으로)
@@ -736,6 +752,27 @@ class Navigator:
             say.append(self.situation(obs))
             st["last_say"] = clock
         return self._finish(o, obs, rooms, say, note, latency, calls, error=None, recheck=recheck)
+
+    def _quick_result(self, plates, say):
+        """빠른 확인 사진 한 장의 결과를 센다. 2장이 다 오면: 목적지를 못 읽고 둘 다 다른 번호면 후보 취소."""
+        st, target = self.st, self.target
+        q = st["quick"]
+        q["got"] += 1
+        nums = [p["n"] for p in (plates or []) if p.get("n")]
+        if target in nums:
+            q["hit"] = True
+        elif nums:
+            q["other"] += 1
+        if q["got"] < QUICK_SHOTS:
+            return
+        st["quick"] = None
+        rec = self.mem.get(target)
+        if not q["hit"] and q["other"] >= QUICK_SHOTS and not st["arrived"] and not (rec and rec["ok"]):
+            if rec:
+                rec.update(n=0, calls=0, front=False, door=False, near=False, recheck=False, last=-99)
+            st.update(maybe_said=False, arr_run=0, act="직진")
+            self.mem.event(self.clock, f"빠른 확인 2장 모두 다른 번호: {target}호 후보 취소")
+            say.append("목적지가 아닙니다. 계속 찾겠습니다.")
 
     def situation(self, obs):
         """무안내 10초 때 말할 지금 상황 한 문장 (규칙 문장, 숫자는 상태에서)."""
@@ -836,6 +873,8 @@ def main():
                     help="인식 프롬프트 판 (4: 2026-11-23 엘리베이터 안 층 표시창, 3: 2026-11-19 계단 층 표시·엘리베이터 근거 4종, "
                          "2: 이전 캐시 재생)")
     ap.add_argument("--start-floor", default=None, help="사용자가 말한 출발 층 (예: 1). 없으면 층 모름으로 시작")
+    ap.add_argument("--send-quality", type=int, default=70,
+                    help="Claude에 보내는 JPEG 품질 (70: 2026-11-23부터. 이전 캐시 재생은 90)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--replay", action="store_true", help="캐시만 씀 (Claude를 부르지 않음, 크레딧 0). 규칙만 바꿨을 때")
     ap.add_argument("--max-steps", type=int, default=None, help="구간마다 앞에서부터 이 초만")
@@ -850,7 +889,7 @@ def main():
         client = GatewayClient(a.model, timeout=a.timeout, ledger=Ledger(a.credit_limit))
     before = None if a.dry_run or a.replay else client.credits_used()
     runner = Runner(cp.Perceiver(client, send_side=a.send_side, cache_path=None if a.dry_run else a.cache,
-                                 version=a.prompt_version), per_call=a.per_call,
+                                 version=a.prompt_version, quality=a.send_quality), per_call=a.per_call,
                     two_segs=a.two_segs.split(",") if a.two_segs else None)
     try:
         for spec in a.route:

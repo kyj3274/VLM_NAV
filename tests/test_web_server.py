@@ -121,7 +121,8 @@ def slow_factory(delays):
     return factory, made
 
 
-def test_busy_when_three_in_flight(tmp_path):
+def test_busy_when_two_in_flight(tmp_path):
+    """2026-11-23: 동시 처리 최대 3 → 2."""
     factory, _ = slow_factory([0.6])
     c, _ = app_with(tmp_path, factory=factory)
     sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
@@ -136,7 +137,7 @@ def test_busy_when_three_in_flight(tmp_path):
     for th in ths:
         th.join()
     st = [r["status"] for r in out]
-    assert st.count("busy") == 2 and st.count("ok") + st.count("stale") == 3
+    assert st.count("busy") == 3 and st.count("ok") + st.count("stale") == 2
 
 
 def test_stale_dropped_and_order_kept(tmp_path):
@@ -223,28 +224,43 @@ def test_sensor_js_with_fake_sensors():
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
 
 
-def test_confirm_endpoint_quick_arrival(tmp_path):
-    """가짜 장면: 목적지 2m 안 첫 응답에 confirm → /confirm 짧은 확인으로 바로 도착 (빠른 확인 켬)."""
-    c, calls = app_with(tmp_path, quick_confirm=True)
-    sid = c.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
-    r = None
-    for k in range(25):
-        r = frame(c, sid, 1.5 * k)
-        if r["confirm"] or r["arrived"]:
-            break
-    assert r["confirm"] and not r["arrived"] and r["say"][-1].endswith("멈춰 주세요, 확인 중입니다.")
-    q = c.post(f"/api/session/{sid}/confirm", headers=H, files={"image": ("q.jpg", jpg(), "image/jpeg")},
-               data={"t": str(1.5 * k + 0.8)}).json()
-    assert q["status"] == "ok" and q["quick"] and q["arrived"]
-    log = [json.loads(x) for x in (tmp_path / sid / "log.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert log[-1]["quick"] and log[-1]["frame"].endswith("_q.jpg")
+def quick(c, sid, t):
+    return c.post(f"/api/session/{sid}/confirm", headers=H, files={"image": ("q.jpg", jpg(), "image/jpeg")},
+                  data={"t": str(t)}).json()
 
 
-def test_quick_confirm_off_by_default(tmp_path):
+def test_confirm_endpoint_two_photos_then_arrival(tmp_path):
+    """빠른 확인(기본 켬): 목적지를 5m 안에서 읽으면 confirm → 사진 2장(/confirm). 두 번째 번(2m 안)에서 그 자리 도착."""
     c, calls = app_with(tmp_path)
     sid = c.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
+    rounds, t, arrived = 0, 0.0, None
+    for k in range(30):
+        r = frame(c, sid, t)
+        t += 1.5
+        if r["arrived"]:
+            arrived = ("frame", r)
+            break
+        if r["confirm"]:
+            rounds += 1
+            q1, q2 = quick(c, sid, t - 1.0), quick(c, sid, t - 0.6)
+            assert q1["status"] == "ok" and q2["status"] == "ok" and q1["quick"] and q2["quick"]
+            if q1["arrived"] or q2["arrived"]:
+                arrived = ("quick", q1 if q1["arrived"] else q2)
+                break
+    assert rounds == 2 and arrived and arrived[0] == "quick"
+    assert arrived[1]["say"][-1].endswith("410호 문이 있습니다.")
+    log = [json.loads(x) for x in (tmp_path / sid / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for x in log if x.get("quick")) == 4 and log[0]["quick_confirm"] and log[0]["send_quality"] == 70
+
+
+def test_quick_confirm_off_by_setting(tmp_path):
+    c, calls = app_with(tmp_path)
+    sid = c.post("/api/session", headers=H, json={"destination": "410호", "quick_confirm": False}).json()["session_id"]
     rs = [frame(c, sid, 1.5 * k) for k in range(25)]
     assert not any(r.get("confirm") for r in rs) and any(r["arrived"] for r in rs)
+    c2, _ = app_with(tmp_path / "off", quick_confirm=False)
+    sid = c2.post("/api/session", headers=H, json={"destination": "410호"}).json()["session_id"]
+    assert not any(frame(c2, sid, 1.5 * k).get("confirm") for k in range(25))
 
 
 # ---------------------------------------------------------------- 2026-11-23

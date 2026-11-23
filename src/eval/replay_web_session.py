@@ -7,7 +7,7 @@
   상태에 넣는 단계(확대 재확인 포함)는 한 번에 하나씩(잠금). 더 나중에 보낸 결과를 이미 넣었으면 버림(stale).
   올리는 시간·인식 시간은 기록값(lag_s − server_s, see_s), 재확인 시간은 기록의 (latency_seconds − see_s).
 - 문 앞 빠른 확인(confirm_now): 응답을 받은 뒤 휴대폰이 곧바로 찍어 보내는 것을 흉내 낸다.
-  찍기 QUICK_SHOT초 + 올리기(기록 중앙값) + 짧은 확인 호출(--quick-call초, 실측 전이라 기본은 이 세션 인식 시간 중앙값).
+  응답을 받은 뒤 0.4·0.8초에 2장(QUICK_GAPS) + 올리기(기록 중앙값) + 짧은 확인 호출(--quick-call초, 실측 전이라 기본은 이 세션 인식 시간 중앙값).
   사진 내용은 --quick-photo: next(방아쇠 프레임 바로 다음 기록 프레임) / nearest(찍었을 시각에 가장 가까운 기록 프레임).
   짧은 확인은 가장 가까운 문패 번호만 읽으므로 그 프레임 obs의 문패 목록(가까운 순 2개)을 쓴다.
 
@@ -29,7 +29,8 @@ import claude_perceiver as cp  # noqa: E402
 import navigator as nv  # noqa: E402
 from claude_client import GatewayClient, Ledger, ReplayClient  # noqa: E402
 
-QUICK_SHOT = 0.3   # 응답을 받고 사진 2장 중 선명한 장을 고르는 시간(초, 추정)
+SHARP_MIN = 320  # 휴대폰 app.js의 sharpMin과 같은 값 (일찍 보내기 기준)
+QUICK_GAPS = (0.4, 0.8)  # 빠른 확인 사진 2장을 찍는 때 (응답을 받은 뒤 초, 2026-11-23 사용자 지시 B3)
 
 
 class PerceiveRunner:
@@ -79,7 +80,20 @@ def load(d):
     return start, steps, stale
 
 
-def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=True, reperceive=None, limit=30.0):
+def sharpness(path):
+    """휴대폰 app.js sharpness()와 같은 계산: 가로 160px 흑백의 4방향 라플라시안 분산."""
+    import numpy as np
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    w = 160
+    a = np.asarray(im.resize((w, round(im.height * w / im.width)), Image.BILINEAR), dtype=np.float64)
+    g = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+    lap = g[1:-1, :-2] + g[1:-1, 2:] + g[:-2, 1:-1] + g[2:, 1:-1] - 4 * g[1:-1, 1:-1]
+    return float(lap.var())
+
+
+def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outside=True, reperceive=None, limit=30.0,
+        quick_on=True, early_send=False):
     start, steps, stale = load(d)
     d = Path(d)
     # 기록에 남은 프레임: 반영된 것 + 버려진 것(stale, obs가 없어 다시 넣을 수 없음 → 같은 시각에 버린 것으로 둠)
@@ -105,6 +119,7 @@ def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=T
         steps = new
     nav = nv.Navigator(runner, start["target"])
     nav.announce = False
+    nav.quick_max = nav.quick_max if quick_on else 0
     nav.new_segment("live_0")
     nav.clock = 0.0
 
@@ -112,6 +127,11 @@ def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=T
     heap, seq = [], 0
     for r in steps:
         recv = r["t"] + (r["lag_s"] - r["server_s"])
+        cl = r.get("client") or {}
+        if early_send and cl.get("pick_end") is not None and sharpness(d / "frames" / r["frame"]) >= SHARP_MIN:
+            # 일찍 보내기 (2026-11-23, 추정): 선명도 기준 이상인 사진은 구간 끝(pick_end)까지 기다리지 않고 보냄
+            recv -= max(0.0, cl["pick_end"] - r["t"])
+            r = {**r, "early": True}
         seq_r = r["web_seq"]
         heapq.heappush(heap, (recv + r["see_s"], seq_r, "frame", r))
     for s in stale:  # 원래 버려진 프레임: 인식 결과가 기록에 없음 → 다시 넣지 않음
@@ -146,24 +166,28 @@ def run(d, quick_photo="next", quick_call=None, verbose=False, recheck_outside=T
                "floor": rec["state"]["floor"], "recheck": [a["asked"] + ("(기록 없음)" if a["missing"] else "") for a in asked],
                "confirm_now": bool(rec.get("confirm_now")), "logged_resp": round(r["t"] + r["lag_s"], 2) if kind == "frame" else None}
         out.append(row)
-        if rec.get("confirm_now") and hasattr(nv.Navigator, "quick_obs"):
-            quick_n += 1
-            cap = lock_free + QUICK_SHOT
-            later = [x for x in by_t if x["t"] > r["t"]]
-            if quick_photo == "next":
-                src = later[0] if later else r
-            else:
-                src = min(by_t, key=lambda x: abs(x["t"] - cap))
-            q = dict(src)
-            q["obs"] = nv.Navigator.quick_obs(src["obs"]["plates"][:2], rec["obs"])
-            q["t"], q["frame"] = round(cap, 2), src["frame"]
-            q["see_s"], q["latency_seconds"] = qcall, qcall
-            q["photo_from"] = src["frame"]
-            recv = cap + up_med
-            seq = 10_000 + quick_n
-            # 받은 순서: 이 시각 전에 받은 프레임보다 뒤, 뒤에 받은 프레임보다 앞
-            seq = max([x["web_seq"] for x in steps if x["t"] + (x["lag_s"] - x["server_s"]) <= recv] + [0]) + 0.5
-            heapq.heappush(heap, (recv + qcall, seq, "quick", q))
+        if rec.get("confirm_now") and hasattr(nv.Navigator, "quick_obs") and quick_on:
+            # 빠른 확인 (2026-11-23): 응답이 휴대폰에 닿은 뒤 QUICK_GAPS초에 2장. 사진 내용은 그 시각에 가장 가까운 기록 사진
+            # (방아쇠 사진·서로 같은 사진 제외). 기록 사진 간격이 약 1.5초라 '근처' 사진이다.
+            used = {r["frame"]}
+            for k, gap in enumerate(QUICK_GAPS):
+                cap = lock_free + gap
+                cand = [x for x in by_t if x["t"] > r["t"] and x["frame"] not in used]
+                if not cand:
+                    break
+                aim = r["t"] + gap if quick_photo == "trigger" else cap  # trigger: 처음 본 사진을 찍은 뒤 0.4·0.8초 근처 사진 (상한 추정)
+                src = min(cand, key=lambda x: abs(x["t"] - aim)) if quick_photo in ("nearest", "trigger") else cand[0]
+                used.add(src["frame"])
+                quick_n += 1
+                q = dict(src)
+                q["obs"] = nv.Navigator.quick_obs(src["obs"]["plates"][:2], rec["obs"])
+                q["t"], q["frame"] = round(cap, 2), src["frame"]
+                q["see_s"], q["latency_seconds"] = qcall, qcall
+                q["photo_from"] = src["frame"]
+                recv = cap + up_med
+                # 받은 순서: 이 시각 전에 받은 프레임보다 뒤, 뒤에 받은 프레임보다 앞
+                seq = max([x["web_seq"] for x in steps if x["t"] + (x["lag_s"] - x["server_s"]) <= recv] + [0]) + 0.1 * (k + 1)
+                heapq.heappush(heap, (recv + qcall, seq, "quick", q))
     if reperceive:
         print(f"새 인식 크레딧 {runner.client.ledger.total:.3f} ({runner.client.ledger.calls}번)")
     return {"start": start, "rows": out, "steps": steps, "missing_recheck": sum(a["missing"] for a in runner.asked),
@@ -214,7 +238,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session")
     ap.add_argument("--name", default="now")
-    ap.add_argument("--quick-photo", default="next", choices=["next", "nearest"])
+    ap.add_argument("--quick-photo", default="nearest", choices=["next", "nearest", "trigger"])
+    ap.add_argument("--no-quick", action="store_true", help="빠른 확인 없이")
+    ap.add_argument("--early-send", action="store_true", help="선명한 사진은 구간 끝을 기다리지 않고 보낸 것으로 (추정)")
     ap.add_argument("--quick-call", type=float, default=None)
     ap.add_argument("--reperceive", choices=["replay", "live"], default=None,
                     help="인식을 새 프롬프트(판 3)로: replay=캐시만(크레딧 0), live=없는 것은 실제 호출(크레딧 씀)")
@@ -223,7 +249,7 @@ def main():
     ap.add_argument("--out-dir", default=str(ROOT / "outputs" / "eval"))
     a = ap.parse_args()
     res = run(a.session, a.quick_photo, a.quick_call, recheck_outside=not a.recheck_inside, reperceive=a.reperceive,
-              limit=a.credit_limit)
+              limit=a.credit_limit, quick_on=not a.no_quick, early_send=a.early_send)
     tw = target_wait(res, res["start"]["target"], res["steps"])
     print(f"올리기 중앙값 {res['up_med']:.2f}s, 인식 중앙값 {res['see_med']:.2f}s, 짧은 확인 {res['quick_call']:.2f}s(추정), "
           f"재확인 {res['rechecks']}번 (기록 없음 {res['missing_recheck']})")

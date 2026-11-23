@@ -38,7 +38,7 @@ from pydantic import BaseModel  # noqa: E402
 import claude_perceiver as cp  # noqa: E402
 from claude_client import ROOT, CreditLimit, GatewayClient, Ledger  # noqa: E402
 from dest_parse import parse_destination, parse_here_floor  # noqa: E402
-from navigator import Navigator, Runner  # noqa: E402
+from navigator import QUICK_SHOTS, Navigator, Runner  # noqa: E402
 
 WEB = Path(__file__).resolve().parent / "web"
 RETRY = "다시 말씀해 주세요."
@@ -47,7 +47,8 @@ RETRY = "다시 말씀해 주세요."
 @dataclass
 class Settings:
     sessions_dir: Path = ROOT / "outputs" / "web_sessions"
-    max_inflight: int = 3              # 한 세션에 동시에 처리하는 사진 수
+    max_inflight: int = 2              # 한 세션에 동시에 처리하는 사진 수 (2026-11-23: 3 → 2, 동시 2개 더 돌 때 호출 3.06초 vs 1.9초)
+    send_quality: int = 70             # Claude에 보내는 JPEG 품질 (휴대폰도 0.7로 올림, 해상도 원본. 재확인 조각은 원본에서)
     credit_per_session: float = 60.0
     credit_per_day: float = 300.0
     model: str = "claude-haiku-5-5"
@@ -55,7 +56,7 @@ class Settings:
     fake: bool = False
     fake_delay: float = 1.2
     access_code: str = ""
-    quick_confirm: bool = False        # 문 앞 빠른 확인(/confirm). 2026-11-19 사용자 지시로 기본 끔
+    quick_confirm: bool = True         # 빠른 확인(/confirm, 사진 2장). 2026-11-23 사용자 지시 B5로 기본 켬 (--no-quick-confirm로 끔)
 
 
 class DailyCredit:
@@ -126,6 +127,7 @@ class DestBody(BaseModel):
     device: dict = {}
     mode: str = "camera"                # camera | file
     files: list[str] = []
+    quick_confirm: bool = True          # 휴대폰 설정 '빠른 확인' (끄면 이 세션은 confirm을 보내지 않음)
 
 
 class EventBody(BaseModel):
@@ -221,13 +223,14 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         d = cfg.sessions_dir / sid
         (d / "frames").mkdir(parents=True, exist_ok=True)
         client = client_factory(dest["target"], cfg.credit_per_session)
-        nav = Navigator(Runner(cp.Perceiver(client)), dest["target"], start_floor=dest.get("here"))
+        nav = Navigator(Runner(cp.Perceiver(client, quality=cfg.send_quality)), dest["target"], start_floor=dest.get("here"))
         nav.announce = False   # "410호로 안내하겠습니다"를 이미 말함
-        nav.quick_max = nav.quick_max if cfg.quick_confirm else 0
+        nav.quick_max = nav.quick_max if cfg.quick_confirm and body.quick_confirm else 0
         nav.new_segment("live_0")
         nav.clock = 0.0
         ws = WebSession(sid, d, nav, client, dest["target"],
-                        {"camera": body.camera, "device": body.device, "mode": body.mode, "files": body.files})
+                        {"camera": body.camera, "device": body.device, "mode": body.mode, "files": body.files,
+                         "quick_confirm": bool(nav.quick_max), "send_quality": cfg.send_quality})
         sessions[sid] = ws
         ws.log({"event": "start", "wall": wall(), "t": 0.0, "target": dest["target"], "destination": dest,
                 "model": getattr(client, "model", ""), "fake": cfg.fake, **info, **ws.info})
@@ -318,7 +321,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         if not dest:
             return retry(info)
         body = DestBody(destination=text, source="whisper", camera=m.get("camera", {}), device=m.get("device", {}),
-                        mode=m.get("mode", "camera"), files=m.get("files", []))
+                        mode=m.get("mode", "camera"), files=m.get("files", []), quick_confirm=m.get("quick_confirm", True))
         return {**start(dest, body, info), "heard": text}
 
     @app.post("/api/session/{sid}/voice", dependencies=[Depends(check_code)])
@@ -336,8 +339,9 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     @app.post("/api/session/{sid}/confirm", dependencies=[Depends(check_code)])
     def confirm(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
                 steps: int | None = Form(None), client: str = Form("{}"), seg: int | None = Form(None)):
-        """문 앞 빠른 확인 (2026-11-19 사용자 지시 4). 응답에 confirm이 오면 휴대폰이 곧바로 찍어 보낸다.
-        가장 가까운 문패 번호만 읽는 짧은 호출 → 같은 순서 규칙(seq)으로 상태에 넣는다. 동시 한도에 하나 더 허용."""
+        """빠른 확인 (2026-11-23 사용자 지시 B3~B5). 응답에 confirm이 오면 휴대폰이 곧바로 0.4초 간격으로 2장을 찍어
+        동시에 보낸다. 가장 가까운 문패 번호만 읽는 짧은 호출(줄 밖) → 같은 순서 규칙(seq)으로 상태에 넣는다.
+        동시 한도에 2장을 더 허용."""
         return process(get_ws(sid), image, t, heading, steps, client, quick=True, seg=seg)
 
     def old_segment(ws: WebSession, seq: int, seg: int, t, why: str):
@@ -358,7 +362,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         if reason:
             return stop(ws, reason)
         with ws.slock:
-            if ws.inflight >= cfg.max_inflight + (1 if quick else 0):
+            if ws.inflight >= cfg.max_inflight + (QUICK_SHOTS if quick else 0):
                 ws.counts["busy"] += 1
                 return {"status": "busy", "say": []}
             ws.inflight += 1
@@ -548,16 +552,17 @@ def main():
     ap.add_argument("--model", default="claude-haiku-5-5")
     ap.add_argument("--credit-session", type=float, default=60.0)
     ap.add_argument("--credit-day", type=float, default=300.0)
-    ap.add_argument("--max-inflight", type=int, default=3)
-    ap.add_argument("--quick-confirm", action="store_true", help="문 앞 빠른 확인 켜기 (기본 끔)")
+    ap.add_argument("--max-inflight", type=int, default=2)
+    ap.add_argument("--send-quality", type=int, default=70, help="Claude에 보내는 JPEG 품질")
+    ap.add_argument("--no-quick-confirm", action="store_true", help="빠른 확인 끄기 (기본 켬)")
     ap.add_argument("--save-dir", default=str(ROOT / "outputs" / "web_sessions"))
     a = ap.parse_args()
     cfg = Settings(sessions_dir=Path(a.save_dir), max_inflight=a.max_inflight, credit_per_session=a.credit_session,
                    credit_per_day=a.credit_day, model=a.model, fake=a.fake, fake_delay=a.fake_delay,
-                   quick_confirm=a.quick_confirm)
+                   quick_confirm=not a.no_quick_confirm, send_quality=a.send_quality)
     app = create_app(cfg)
     print(f"READY http://{a.host}:{a.port}  ({'가짜 응답' if a.fake else a.model}, 세션 {a.credit_session:g} / "
-          f"하루 {a.credit_day:g} 크레딧, 동시 {a.max_inflight}, 빠른 확인 {'켬' if a.quick_confirm else '끔'})", flush=True)
+          f"하루 {a.credit_day:g} 크레딧, 동시 {a.max_inflight}, 빠른 확인 {'끔' if a.no_quick_confirm else '켬'})", flush=True)
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
 
 

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -198,11 +199,15 @@ class Perceiver:
     """client: claude_client의 GatewayClient / FakeClient / DryRunClient.
     send_side: Claude에 보낼 사진 긴 변(None = 원본). cache: 같은 프레임·같은 설정이면 다시 부르지 않음(jsonl)."""
 
-    def __init__(self, client, send_side=None, cache_path=None, dest_text=None, version=4):
+    def __init__(self, client, send_side=None, cache_path=None, dest_text=None, version=4, quality=90, pass_kb=120):
         # version: 인식 프롬프트 판. 4 = 2026-11-23 (엘리베이터 안 층 표시창 ed). 3 = 2026-11-19 (계단 층 표시 ss,
         # 엘리베이터 근거 4종·먼 거리). 캐시 키에 붙여
         # 이전 프롬프트 결과와 섞이지 않게 한다. 2 = 이전 캐시(claude_v2.jsonl)를 그대로 재생할 때.
         self.client, self.send_side, self.dest_text, self.version = client, send_side, dest_text, version
+        # quality: Claude에 보내는 JPEG 품질 (2026-11-23 사용자 지시 A2: 휴대폰과 같은 수준으로, 해상도는 원본 유지).
+        # 이미 pass_kb 이하인 JPEG 파일(휴대폰이 품질 0.7로 올린 사진)은 다시 압축하지 않고 그대로 보낸다.
+        # 확대 재확인 조각은 이 값과 상관없이 원본에서 잘라 품질 90으로 보낸다.
+        self.quality, self.pass_kb = quality, pass_kb
         self.cache_path = Path(cache_path) if cache_path else None
         self.cache, self.lock = {}, threading.Lock()
         if self.cache_path and self.cache_path.exists():
@@ -211,7 +216,17 @@ class Perceiver:
                 self.cache[r["key"]] = r
 
     def _key(self, kind, frame, extra=""):
-        return f"{kind}|{getattr(self.client, 'model', '')}|{self.send_side}|{Path(frame).parent.name}/{Path(frame).name}|{extra}"
+        q = f"|q{self.quality}" if self.quality != 90 and kind != "recheck" else ""  # 품질 90(이전 캐시)은 키 그대로
+        return f"{kind}|{getattr(self.client, 'model', '')}|{self.send_side}|{Path(frame).parent.name}/{Path(frame).name}|{extra}{q}"
+
+    def _block(self, frame, img=None):
+        """보낼 사진 블록. 품질 90이면 전처럼 다시 저장, 아니면 작은 JPEG는 그대로, 큰 것은 그 품질로 다시 저장."""
+        if self.quality != 90 and img is None and self.send_side is None:
+            raw = Path(frame).read_bytes()
+            if raw[:2] == b"\xff\xd8" and len(raw) <= self.pass_kb * 1000:
+                return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                    "data": base64.b64encode(raw).decode()}}
+        return jpeg_block(resize(img or Image.open(frame).convert("RGB"), self.send_side), quality=self.quality)
 
     def _store(self, key, res):
         rec = {"key": key, "data": res.data, "log": res.log()}
@@ -240,10 +255,10 @@ class Perceiver:
         if two:
             content = []
             for i, f in enumerate(frames, 1):
-                content += [{"type": "text", "text": f"사진 {i}"}, jpeg_block(resize(Image.open(f).convert("RGB"), self.send_side))]
+                content += [{"type": "text", "text": f"사진 {i}"}, self._block(f)]
             schema = SEE2_DEST_SCHEMA if dest else SEE2_SCHEMA
         else:
-            content = [jpeg_block(resize(img or Image.open(frames[0]).convert("RGB"), self.send_side))]
+            content = [self._block(frames[0], img)]
             schema = SEE_DEST_SCHEMA if dest else SEE_SCHEMA
         if v4:
             schema = {**schema, "properties": {**schema["properties"], "ed": _S}, "required": [*schema["required"], "ed"]}
@@ -265,7 +280,7 @@ class Perceiver:
         if key in self.cache:
             r = self.cache[key]
             return {"plates": self._attach(clean(r["data"]), [frame])["plates"], "call": r["log"], "cached": True}
-        content = [jpeg_block(resize(Image.open(frame).convert("RGB"), self.send_side)), {"type": "text", "text": "가장 가까운 문패 번호를 적어라."}]
+        content = [self._block(frame), {"type": "text", "text": "가장 가까운 문패 번호를 적어라."}]
         res = self.client.call(QUICK_SYSTEM, content, QUICK_SCHEMA, max_tokens=120, kind="quick")
         rec = self._store(key, res)
         plates = self._attach(clean(res.data), [frame])["plates"] if res.ok else None

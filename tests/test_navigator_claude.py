@@ -70,16 +70,17 @@ def test_route_a_like():
     assert recs[2]["rooms"] == [] and recs[2]["recheck"]["match"] is True
     assert recs[3]["action"] == "도착" and recs[3]["say"] == ["정면에 314호 문이 있습니다."]
     assert recs[4]["action"] == "도착" and recs[4]["say"] == []  # 도착 안내는 한 번만
-    assert recs[0]["recheck"]["match"] is True  # 317: 읽기 + 재확인 일치 → 한 번에 확정
+    # 317: 2026-11-23부터 층 판단용 재확인은 안 함. 정면 2.5m(정면 가까이) + 문 옆 + 1번 읽음 = 3점으로 한 번에 확정
+    assert recs[0]["recheck"] is None and recs[0]["state"]["floor"] == "3"
 
 
 def test_wrong_floor_after_exit():
     nav = nv.Navigator(ScriptRunner([O([("410", "L", 6.0, "door")])] * 3), "314")
     exited(nav)
-    # 1번 읽음 + 문 옆 + 확대 재확인 일치 = 3점 → 첫 초에 확정
-    recs = run(nav, 1)
-    assert recs[0]["state"]["wrong_floor"] and recs[0]["action"] == "엘리베이터로 돌아가기"
-    assert recs[0]["recheck"]["why"] == "층을 정할 번호"
+    # 2026-11-23: 층을 정할 번호는 재확인하지 않음 → 1번 읽음 + 문 옆 = 2점, 두 번째 호출(2번 읽음 + 문 옆)에 확정
+    recs = run(nav, 2)
+    assert recs[0]["recheck"] is None and recs[0]["state"]["floor"] is None
+    assert recs[1]["state"]["wrong_floor"] and recs[1]["action"] == "엘리베이터로 돌아가기"
 
 
 def test_recheck_mismatch_blocks():
@@ -223,10 +224,11 @@ def test_passed_target_then_neighbor_is_away():
 def test_stairs_floor_move_one_read_and_stop_elevator():
     """1층으로 정한 뒤 계단 장면 → '층 이동 가능'. 그 뒤 다른 층 확정 문패 한 번이면 바로 층 이동, 엘리베이터 안내 멈춤."""
     script = [O([("105", "C", 2.5, "door")]), O(elev=EL, place="elev_hall"), O(elev=EL, place="elev_hall"),
-              O(place="stairs"), O(place="stairs"), O([("405", "L", 4.0, "door")])]
+              O(place="stairs"), O(place="stairs"), O([("405", "L", 4.0, "door")]), O([("405", "L", 4.0, "door")])]
     nav = nv.Navigator(ScriptRunner(script), "410")
     nav.new_segment("1")
-    recs = run(nav, 6)
+    recs = run(nav, 7)
+    recs = recs[:5] + recs[6:]  # 2026-11-23: 405는 재확인 없이 두 번째 읽기에 확정(옆 4m라 정면 가까이 아님)
     assert recs[0]["state"]["floor"] == "1" and recs[2]["action"] == "엘리베이터 타기"
     assert recs[3]["state"]["floor_move"]["why"] == "계단"
     assert recs[4]["action"] == "계단으로 올라가기" and recs[4]["say"] == ["계단입니다. 4층까지 올라가세요."]
@@ -239,10 +241,10 @@ def test_stairs_floor_move_one_read_and_stop_elevator():
 
 def test_floor_conflict_without_stairs_still_two():
     """계단·층 표시가 없으면 다른 층 문패는 지금처럼 2번 연속이어야 층이 바뀐다."""
-    nav = nv.Navigator(ScriptRunner([O([("105", "C", 2.5, "door")])] + [O([("405", "L", 4.0, "door")])] * 2), "410")
+    nav = nv.Navigator(ScriptRunner([O([("105", "C", 2.5, "door")])] + [O([("405", "L", 4.0, "door")])] * 3), "410")
     nav.new_segment("1")
-    recs = run(nav, 3)
-    assert recs[1]["state"]["floor"] == "1" and recs[2]["state"]["floor"] == "4"
+    recs = run(nav, 4)  # 405 확정(두 번째 읽기) 뒤 층 충돌 2번 연속
+    assert recs[2]["state"]["floor"] == "1" and recs[3]["state"]["floor"] == "4"
 
 
 def test_floor_sign_after_stairs_one_read():
@@ -291,7 +293,7 @@ def test_quick_confirm_miss_resets():
     o = {"key": "q.jpg", "keys": ["q.jpg"], "pick_seconds": 0, "cached": False, "call": {"seconds": 1.0, "credit": 0.1},
          "obs": nv.Navigator.quick_obs([], None)}
     r1 = nav.step(observed=o, quick=True)
-    assert not r1["state"]["arrived"] and r1["state"]["arr_run"] == 0 and not r1["state"]["quick_asked"]
+    assert not r1["state"]["arrived"] and r1["state"]["arr_run"] == 0 and r1["state"]["quick"]["got"] == 1
 
 
 # ---------------------------------------------------------------- 2026-11-19 (2): 무안내·계단 층 표시·엘리베이터 두 단계·지나침
@@ -602,3 +604,101 @@ def test_door_mid_session_is_not_entrance_evidence():
     nav.new_segment("1")
     recs = run(nav, len(script))
     assert all(r["state"]["floor"] is None for r in recs) and "엘리베이터를 타고" not in says(recs)
+
+
+# ---------------------------------------------------------------- 2026-11-23 (3) 판단 시간 줄이기·빠른 확인 개선
+def qo(t, plates):
+    """빠른 확인 사진 한 장 (찍은 시각 t)."""
+    return {"key": f"q{t}.jpg", "keys": [f"q{t}.jpg"], "pick_seconds": 0, "cached": False, "call": {"seconds": 1.0, "credit": 0.05},
+            "obs": nv.Navigator.quick_obs([dict(n=x[0], name="", side=x[1], m=x[2], on=(x[3] if len(x) > 3 else "door"),
+                                                box=[40, 30, 50, 40]) for x in plates])}
+
+
+def nav4(script, target="410"):
+    nav = nv.Navigator(ScriptRunner([O([("412", "C", 2.5, "door")])] + script), target)
+    exited(nav)
+    nav.step(["f.jpg"], t=0.0)
+    return nav
+
+
+def test_recheck_only_target_candidate_or_unread():
+    nav = nv.Navigator(ScriptRunner([O()]), "410")
+    exited(nav)
+    assert nav.recheck_pick(O([("317", "L", 5.0, "door")])) == (None, None)       # 층을 정할 번호: 안 함
+    assert nav.recheck_pick(O([("411", "L", 5.0, "door")]))[1] == "목적지 근처 번호"
+    assert nav.recheck_pick(O(unread=["강의실3"]))[1] == "번호 안 읽힌 문패"
+
+
+def test_quick_trigger_5m_two_photos_confirm_and_arrive():
+    """목적지 후보를 5m 안에서 처음 읽으면 confirm. 빠른 확인 사진이 2m 안에서 목적지를 읽으면 서로 다른 사진 2장으로 확정 + 그 자리 도착."""
+    # 믿음 점수가 낮은 경우: 벽 문패, 옆, 가까운 확정 번호 없음, 재확인 못 읽음 → 점수만으로는 확정 안 됨
+    nav = nv.Navigator(ScriptRunner([O([("410", "L", 4.5, "wall")])], rechecks={"410": ""}), "410")
+    exited(nav)
+    r = nav.step(["f.jpg"], t=1.5)
+    assert r["confirm_now"] and r.get("target_pending") and r["say"][-1] == "목적지 같습니다, 확인 중입니다."
+    r1 = nav.step(t=2.2, observed=qo(2.2, [("410", "L", 1.8, "wall")]), quick=True)
+    assert r1["state"]["arrived"] and r1["say"] == ["왼쪽 앞에 410호 문이 있습니다."] and r1["action"] == "도착"
+    assert any("빠른 확인, 서로 다른 사진 2장" in e["text"] for e in nav.mem.events)  # 문 옆이 아니어도(벽) 2장이면 확정
+    r2 = nav.step(t=2.6, observed=qo(2.6, [("410", "L", 1.7)]), quick=True)
+    assert r2["say"] == []  # 도착 안내는 한 번만
+
+
+def test_quick_far_photo_confirms_without_arrival():
+    nav = nav4([O([("410", "C", 5.0, "door")])])
+    nav.step(["f.jpg"], t=1.5)
+    r1 = nav.step(t=2.2, observed=qo(2.2, [("410", "C", 4.0)]), quick=True)
+    r2 = nav.step(t=2.6, observed=qo(2.6, []), quick=True)
+    assert r1["rooms"] == ["410"] and not r1["state"]["arrived"] and "410호 문패가 12시 방향 약 4미터에 있습니다." in r1["say"]
+    assert r2["state"]["quick"] is None
+
+
+def test_quick_both_other_numbers_cancel_candidate_and_max_two_rounds():
+    """2장 모두 다른 번호(412)를 읽으면 후보 취소. 목적지 하나에 빠른 확인은 최대 2번."""
+    nav = nav4([O([("410", "L", 4.0, "door")]), O([("410", "L", 4.0, "door")]), O([("410", "L", 3.5, "door")])])
+    r = nav.step(["f.jpg"], t=1.5)
+    assert r["confirm_now"]
+    nav.step(t=2.2, observed=qo(2.2, [("412", "L", 3.0)]), quick=True)
+    r2 = nav.step(t=2.6, observed=qo(2.6, [("412", "L", 3.0)]), quick=True)
+    assert r2["say"] == ["목적지가 아닙니다. 계속 찾겠습니다."] and r2["action"] == "직진"
+    assert nav.mem.get("410")["calls"] == 0 and "410" not in nav.mem.confirmed()
+    r = nav.step(["f.jpg"], t=9.0)  # 나중에 다시 읽힘: 두 번째 빠른 확인
+    assert r["confirm_now"] and r["state"]["quick_n"] == 2
+    nav.step(t=9.5, observed=qo(9.5, [("412", "L", 3.0)]), quick=True)
+    nav.step(t=9.9, observed=qo(9.9, [("412", "L", 3.0)]), quick=True)
+    r = nav.step(["f.jpg"], t=16.0)
+    assert not r.get("confirm_now")  # 3번째는 없음
+
+
+def test_quick_same_photo_is_not_second_call():
+    """처음 본 사진과 같은 사진(같은 찍은 시각)은 두 번째 호출로 치지 않는다."""
+    nav = nav4([O([("410", "L", 1.8, "wall")])])
+    nav.step(["f.jpg"], t=1.5)
+    r = nav.step(t=1.5, observed=qo(1.5, [("410", "L", 1.8)]), quick=True)
+    assert not r["state"]["arrived"] and nav.mem.get("410")["calls"] == 1
+
+
+def test_quick_off_and_timeout():
+    nav = nav4([O([("410", "L", 4.0, "door")])] * 3)
+    nav.quick_max = 0
+    assert not nav.step(["f.jpg"], t=1.5).get("confirm_now")
+    nav = nav4([O([("410", "L", 4.0, "door")])] + [O()] * 8)
+    nav.step(["f.jpg"], t=1.5)
+    assert nav.st["quick"] is not None
+    nav.step(["f.jpg"], t=1.5 + nv.QUICK_WAIT + 0.5)  # 사진이 안 옴(흐림) → 기다리지 않음
+    assert nav.st["quick"] is None
+
+
+def test_perceiver_send_quality_and_passthrough(tmp_path):
+    import base64
+    from PIL import Image
+    f = tmp_path / "seg" / "i0000.jpg"
+    f.parent.mkdir()
+    Image.new("RGB", (72, 128), "white").save(f, quality=70)
+    seen = []
+    data = {"plates": [], "fs": "", "ss": "", "place": "corridor", "door": "none", "el": [], "arrows": [], "ed": ""}
+    fc = FakeClient(lambda kind, content, n: (seen.append(content), data)[1], credit=0.1)
+    p = cp.Perceiver(fc, quality=70)
+    p.see(f)
+    assert base64.b64decode(seen[0][0]["source"]["data"]) == f.read_bytes()   # 작은 JPEG는 그대로
+    assert p._key("see", f).endswith("|q70") and "|q70" not in p._key("recheck", f, "1,2,3,4")
+    assert cp.Perceiver(fc)._key("see", f).endswith("|")   # 품질 90은 이전 캐시 키 그대로
