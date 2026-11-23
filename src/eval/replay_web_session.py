@@ -151,7 +151,7 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
         before = b_rec
         t_cap = max(r["t"], float(nav.clock) + 0.01) if nav.records else r["t"]
         rec = nav.step(t=round(t_cap, 2), observed=o, quick=(kind == "quick")) if kind == "quick" else \
-            nav.step(t=round(t_cap, 2), observed=o)
+            nav.step(t=round(t_cap, 2), observed=o, heading=r.get("heading"))
         asked = runner.asked[before:]
         dur = sum(a["sec"] if "sec" in a else (rechecks.get((a["frame"], a["asked"])) or {"sec": rc_default})["sec"]
                   for a in asked)
@@ -173,11 +173,14 @@ def run(d, quick_photo="nearest", quick_call=None, verbose=False, recheck_outsid
             for k, gap in enumerate(QUICK_GAPS):
                 cap = lock_free + gap
                 cand = [x for x in by_t if x["t"] > r["t"] and x["frame"] not in used]
+                if quick_photo == "stop":  # 사용자가 "잠시 멈춰 주세요"를 듣고 멈춤: 응답이 닿기 전 마지막 기록 사진의 장면을 새로 찍은 것으로
+                    cand = [max([x for x in by_t if x["t"] <= lock_free] or [r], key=lambda x: x["t"])]
                 if not cand:
                     break
                 aim = r["t"] + gap if quick_photo == "trigger" else cap  # trigger: 처음 본 사진을 찍은 뒤 0.4·0.8초 근처 사진 (상한 추정)
                 src = min(cand, key=lambda x: abs(x["t"] - aim)) if quick_photo in ("nearest", "trigger") else cand[0]
-                used.add(src["frame"])
+                if quick_photo != "stop":
+                    used.add(src["frame"])
                 quick_n += 1
                 q = dict(src)
                 q["obs"] = nv.Navigator.quick_obs(src["obs"]["plates"][:2], rec["obs"])
@@ -238,7 +241,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session")
     ap.add_argument("--name", default="now")
-    ap.add_argument("--quick-photo", default="nearest", choices=["next", "nearest", "trigger"])
+    ap.add_argument("--quick-photo", default="nearest", choices=["next", "nearest", "trigger", "stop"])
     ap.add_argument("--no-quick", action="store_true", help="빠른 확인 없이")
     ap.add_argument("--early-send", action="store_true", help="선명한 사진은 구간 끝을 기다리지 않고 보낸 것으로 (추정)")
     ap.add_argument("--quick-call", type=float, default=None)

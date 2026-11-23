@@ -87,6 +87,16 @@ TWO_RULE = """
 ED_RULE = """
 - ed: 사용자가 엘리베이터 안에 있을 때(place가 in_elev) 엘리베이터 안 층 표시창의 글자가 또렷하면 그대로(예: 숫자 하나나 B와 숫자). 엘리베이터 밖이거나 안 보이면 빈 문자열."""
 
+# 판 5 (2026-11-23 사용자 지시 B7·B8): 호실 범위 안내판 rr, 복도가 길게 보이는 방향 lw.
+# in_elev 보충: 휴대폰 기록(11-19 두 번째)에서 밖에서 닫힌 엘리베이터 문을 가까이 본 사진 31장을 in_elev로 읽어
+# 자동 하차 감지(B5)가 잘못 켜졌다. 칸 안쪽이 보일 때만 in_elev로 (규칙만으로는 진짜 탑승(11-20 첫 번째)과 구분 안 됨).
+V5_RULE = """
+- rr: 여러 호실의 번호 범위와 화살표를 함께 적은 안내판이나 층 안내도에서 범위와 방향이 또렷할 때만 [시작 번호, 끝 번호, 방향] 목록. 방향은 화살표가 가리키는 쪽: L 왼쪽, R 오른쪽, F 위쪽 화살표(앞으로), B 뒤로, 화살표가 없거나 아래쪽이면 N. 최대 3개, 없으면 빈 목록.
+- lw: 사진에서 복도가 가장 길게 이어져 보이는 방향 L, C, R. 복도가 아니거나 모르면 none.
+- place의 in_elev는 엘리베이터 칸 안에 있을 때만(칸 안쪽 벽, 손잡이, 층 버튼 판, 거울 같은 칸 내부가 보일 때). 엘리베이터 밖에서 닫힌 문을 가까이 본 것은 elev_hall."""
+V5_PROPS = {"rr": {"type": "array", "items": {"type": "array", "items": _S}},
+            "lw": {"type": "string", "enum": ["L", "C", "R", "none"]}}
+
 DEST_RULE = """
 - dest: 사용자의 목적지가 사진에 보일 때만 seen true. why는 근거(plate 문패 글자, pictogram 그림 표지, text 그 밖의 글자). 안 보이면 seen false, side none, m -1, why none."""
 
@@ -126,6 +136,19 @@ def floor_of_display(s):
         return "B" + m.group(1)
     m = re.fullmatch(r"(\d{1,2})(?:F|층)?", s)
     return str(int(m.group(1))) if m and int(m.group(1)) > 0 else None
+
+
+def ranges_of(rr):
+    """호실 범위 안내판 [[시작, 끝, 방향], …] → [{"lo", "hi", "to"}] (3자리 번호, 시작 ≤ 끝, 범위 100 미만만, 최대 3개)."""
+    out = []
+    for x in (rr or [])[:3]:
+        if not isinstance(x, (list, tuple)) or len(x) < 2:
+            continue
+        lo, hi = (re.sub(r"\D", "", str(v)) for v in x[:2])
+        to = str(x[2]).upper() if len(x) > 2 else "N"
+        if len(lo) == 3 and len(hi) == 3 and int(lo) <= int(hi) and int(hi) - int(lo) < 100:
+            out.append({"lo": int(lo), "hi": int(hi), "to": to if to in ("L", "R", "F", "B") else "N"})
+    return out
 
 
 def floors_of_stair_sign(s):
@@ -186,7 +209,8 @@ def clean(data, img_size=None):
            "stair_sign": (data.get("ss") or "").strip(), "stair_floors": floors_of_stair_sign(data.get("ss")),
            "door_ahead": data.get("door_ahead", "none"), "elev": elev,
            "arrows": (data.get("arrows") or [])[:3], "fixes": fixes,
-           "elev_floor": floor_of_display(data.get("ed")) if data.get("place") == "in_elev" else None}
+           "elev_floor": floor_of_display(data.get("ed")) if data.get("place") == "in_elev" else None,
+           "ranges": ranges_of(data.get("rr")), "long_way": data.get("lw") if data.get("lw") in ("L", "C", "R") else None}
     if "dest" in data:
         d = data["dest"]
         out["dest"] = {"seen": bool(d.get("seen")), "side": d.get("side", "none"),
@@ -199,8 +223,8 @@ class Perceiver:
     """client: claude_client의 GatewayClient / FakeClient / DryRunClient.
     send_side: Claude에 보낼 사진 긴 변(None = 원본). cache: 같은 프레임·같은 설정이면 다시 부르지 않음(jsonl)."""
 
-    def __init__(self, client, send_side=None, cache_path=None, dest_text=None, version=4, quality=90, pass_kb=120):
-        # version: 인식 프롬프트 판. 4 = 2026-11-23 (엘리베이터 안 층 표시창 ed). 3 = 2026-11-19 (계단 층 표시 ss,
+    def __init__(self, client, send_side=None, cache_path=None, dest_text=None, version=5, quality=90, pass_kb=120):
+        # version: 인식 프롬프트 판. 5 = 2026-11-23 (호실 범위 안내판 rr, 긴 복도 방향 lw). 4 = 2026-11-23 (엘리베이터 안 층 표시창 ed). 3 = 2026-11-19 (계단 층 표시 ss,
         # 엘리베이터 근거 4종·먼 거리). 캐시 키에 붙여
         # 이전 프롬프트 결과와 섞이지 않게 한다. 2 = 이전 캐시(claude_v2.jsonl)를 그대로 재생할 때.
         self.client, self.send_side, self.dest_text, self.version = client, send_side, dest_text, version
@@ -251,7 +275,8 @@ class Perceiver:
             r = self.cache[key]
             return {"obs": self._attach(clean(r["data"]), frames), "call": r["log"], "cached": True}
         v4 = self.version >= 4
-        system = SYSTEM + (ED_RULE if v4 else "") + (DEST_RULE if dest else "") + (TWO_RULE if two else "")
+        v5 = self.version >= 5
+        system = SYSTEM + (ED_RULE if v4 else "") + (V5_RULE if v5 else "") + (DEST_RULE if dest else "") + (TWO_RULE if two else "")
         if two:
             content = []
             for i, f in enumerate(frames, 1):
@@ -262,6 +287,8 @@ class Perceiver:
             schema = SEE_DEST_SCHEMA if dest else SEE_SCHEMA
         if v4:
             schema = {**schema, "properties": {**schema["properties"], "ed": _S}, "required": [*schema["required"], "ed"]}
+        if v5:
+            schema = {**schema, "properties": {**schema["properties"], **V5_PROPS}, "required": [*schema["required"], *V5_PROPS]}
         content.append({"type": "text", "text": f"사용자의 목적지: {dest}" if dest else "보이는 것을 적어라."})
         res = self.client.call(system, content, schema, max_tokens=500, kind="see")
         rec = self._store(key, res)

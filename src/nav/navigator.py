@@ -5,6 +5,7 @@
         화살표, 앞의 출입문. 중요한 문패 1개는 원본에서 잘라 확대해 다시 읽음(recheck).
   판단  규칙. 문패 확정(nav_memory 믿음 점수 3), 층 충돌은 2초 연속, 번호 증감으로 진행 방향, 엘리베이터는 근거가
         2초 연속, 하차 직후 4초는 뒤의 엘리베이터 무시, 10초 무안내면 한 번 말함, 시작 위치 파악 5초.
+        엘리베이터 하차(버튼·자동 감지) 뒤 최대 6초 둘러보며 방향 근거를 모아 한 번 안내 (direction.py).
         층을 모르면 1층으로 가정하지 않는다(엘리베이터·계단 안내 없음, 15초 뒤 층을 물음, 말로 받은 층은 문패와 같은 근거).
   문장  상태로 틀에 맞춰 만든다. 10초 동안 할 말이 없으면 지금 행동을 되풀이하는 규칙 문장.
         (Claude say는 2단계에서 보조로 썼으나 3단계에서 사용자 지시로 스키마에서 뺌)
@@ -31,6 +32,7 @@ import numpy as np
 from PIL import Image
 
 import claude_perceiver as cp
+import direction as dr
 import nav_memory
 from claude_client import CreditLimit, DryRunClient, GatewayClient, Ledger, ReplayClient, ROOT
 
@@ -57,6 +59,7 @@ QUICK_MAX = 2     # 빠른 확인(confirm_now)은 목적지 하나에 이 횟수
 QUICK_M = 5.0     # 목적지 후보를 이 거리(m) 안에서 읽으면 빠른 확인 (2026-11-23 B3, 전에는 2m 안 '멈춰 주세요' 때)
 QUICK_SHOTS = 2   # 빠른 확인 한 번에 휴대폰이 찍어 보내는 사진 수 (0.4초 간격)
 QUICK_WAIT = 6.0  # 빠른 확인 사진이 이 초 안에 다 안 오면(흐림·실패) 기다리지 않음
+QUICK_SAY = "목적지 같습니다. 잠시 멈춰 주세요."
 # 2026-11-23 사용자 지시: 1층 가정(VLM_NAV assume1)을 없앰. 층을 모르면 '모름'으로 두고 엘리베이터·계단 안내를 하지 않는다.
 #   (4층에서 시작해도 위치 파악 5초 뒤 1층으로 보고 "엘리베이터를 타고 4층을 누르세요"라고 했음)
 ASK_FLOOR_SEC = 15    # 구간 시작 뒤 이 초가 지나도 층을 모르면 "지금 몇 층인지 말씀해 주세요"
@@ -67,6 +70,16 @@ FLOOR_MOVE_HOLD = 20  # '층 이동 가능'(계단·다른 층 표시)은 계단
                       # (PR #1 리뷰 1: 켜진 채로 남아 오독 한 번에 층이 바뀜. 2026-11-19 계단 시험에서 마지막 계단 장면 45.8초 →
                       #  4층 첫 문패 62.7초로 약 17초 걸려서 20초. 그 안에 첫 문패를 못 읽어도 층 충돌 2번 연속 규칙으로 바뀜)
 EL_DISP_FRESH = 10    # 엘리베이터 안 층 표시창을 '내렸어요' 전 이 초 안에 읽었으면 내린 층의 임시 층으로 씀
+# 엘리베이터에서 내린 뒤 (2026-11-23 사용자 지시 B5·B6·B8)
+HALL = ("corridor", "lobby", "elev_hall", "junction", "room_door")  # 자동 하차 감지의 '복도·홀' 장면
+EXIT_IN = 3       # 엘리베이터 안(in_elev) 장면이 이 장 연속이면 탄 것으로 봄
+EXIT_OUT = 3      # 그 뒤 복도·홀 장면이 이 장 연속이면 내린 것으로 봄 (버튼 "내렸어요"와 같은 처리)
+                  # 지시는 2장·2장. 휴대폰 기록 2개(실제 탑승 2번)에서 2·2는 잘못된 하차가 2번(밖에서 닫힌 문을 '안'으로 읽음,
+                  # 칸 안에서 열린 문 너머 로비를 '복도'로 읽음), 3·3은 실제 하차 2번만 (판 4 기록·판 5 다시 인식 모두). 감지는 약 1.5초 늦음
+EXIT_DUP = 20     # 내림 처리 뒤 이 초 안에 다시 오는 내림(버튼·자동)은 같은 하차로 보고 다시 처리하지 않음.
+                  # 자동 감지는 내린 뒤 복도 사진 2장(약 3초) + 응답(2~4초) 뒤라, 그 무렵 사용자가 버튼을 눌러도 겹치지 않게 넉넉히.
+SCAN_SEC = 6      # 내린 직후 둘러보기 최대 시간. 그동안은 진행 안내(직진 등)를 하지 않는다
+EXIT_SAY = "잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
 ACTIONS = ["문 통과", "직진", "왼쪽", "오른쪽", "뒤로 돌기", "엘리베이터 타기", "엘리베이터로 돌아가기",
            "멈추고 둘러보기", "목적지 접근", "도착",
            "계단으로 올라가기", "계단으로 내려가기", "계단에서 나가기"]  # 계단 3개: 2026-11-19 사용자 지시 5
@@ -134,7 +147,8 @@ class Navigator:
                    "floor_move": None, "quick": None, "quick_n": 0,
                    "el_cand": None, "el_last": None, "el_miss": 0, "el_passed": False, "stair": new_stair(),
                    "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None,
-                   "door_out": False}
+                   "door_out": False, "elev_run": 0, "elev_in": False, "hall_run": 0, "exit_cand": None,
+                   "scan": None, "dir": None, "far": {}}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
@@ -145,6 +159,9 @@ class Navigator:
         self.si, self.sec, self.seq, self.seg_start = 0, 0, "", 0
         self.quick_max = QUICK_MAX  # 문 앞 빠른 확인 횟수 (웹 서버가 0으로 끌 수 있음)
         self.announce = True  # 첫 걸음에 "○호로 안내를 시작합니다"를 말할지 (웹은 미리 말함)
+        self.last_exit = None   # 마지막으로 내림을 처리한 시각 (같은 하차를 두 번 처리하지 않게)
+        self.exit_say = False   # 다음 걸음에서 내림 문장을 말할지 (웹 버튼은 응답에서 바로 말하므로 False)
+        self.plate_dirs = []    # 내린 뒤 걸으며 확정한 문패와 그때 나침반 방향 (다른 층 같은 끝자리 번호의 약한 근거, B8c)
 
     def start_head(self):
         """경로 시작 문장 앞부분. 웹은 '410호로 안내하겠습니다'를 이미 말했으므로 announce=False로 앞 문장을 뺀다."""
@@ -160,7 +177,7 @@ class Navigator:
         self.mem.target = target
         st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
                   elevator_said=False, el_approach=False, el_ready=None, quick=None, quick_n=0,
-                  el_cand=None, el_passed=False)
+                  el_cand=None, el_passed=False, dir=None, far={})
         # PR #1 리뷰 3: 이전 목적지로 가던 중 한 번의 호출로 확정된 문패가 새 목적지이면 확정을 풀고
         # '서로 다른 호출 2번' 기준으로 다시 검사한다 (FORGET초 넘게 안 보였으면 호출 수는 0으로 봄).
         p = self.mem.get(target)
@@ -204,27 +221,91 @@ class Navigator:
         return self.floor_next(head=f"{floor}층으로 알겠습니다. ")
 
     # ------------------------------------------------------------ 구간
-    def new_segment(self, seq=""):
+    def new_segment(self, seq="", start=None, keep=None):
         """구간 시작. 첫 구간이 아니면 엘리베이터를 타고 내린 것으로 본다 (층·위치는 모름으로).
         내리기 직전(EL_DISP_FRESH초 안)에 엘리베이터 안 층 표시창을 읽었으면 그 층을 임시 층으로 둔다
-        (임시 층은 다른 층 확정 문패 한 번이면 문패를 따름)."""
+        (임시 층은 다른 층 확정 문패 한 번이면 문패를 따름).
+        start: 구간 시작 시각(자동 하차 감지는 첫 복도 사진 시각). keep: (층, 근거) 자동 감지 전 첫 복도 사진에서 이미 정한 층.
+        내린 뒤에는 SCAN_SEC초 둘러보기(scan)를 시작한다 (2026-11-23 B6)."""
         if self.records or self.seg_n:
             self.si += 1
             self.mem.new_segment(self.clock)
-        self.seq, self.sec, self.seg_start, self.seg_n = seq, 0, self.clock, 0
+        self.seq, self.sec, self.seg_start, self.seg_n = seq, 0, self.clock if start is None else start, 0
         if self.si > 0:
             disp = self.st.get("el_disp")
             carry = disp["floor"] if disp and self.clock - disp["t"] <= EL_DISP_FRESH else None
+            src = "엘리베이터 표시창" if carry else None
+            if keep:
+                carry, src = keep
+            self.last_exit, self.exit_say = self.clock, True
             self.st.update(floor=carry, wrong_floor=bool(carry and self.tf) and carry != self.tf, room=None,
                            floor_rooms=[], elevator_said=False, el_run=0,
                            el_seen=False, el_ready=None, button=None, pending=None, fs_last=None, near_d=[],
                            trend_said=None, target_seen=None, arr_run=0, last_say=self.clock, loc=None,
                            door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False,
                            floor_move=None, quick=None, quick_n=0, el_cand=None, el_last=None, el_miss=0,
-                           el_passed=False, stair=new_stair(), floor_temp=bool(carry),
-                           floor_src="엘리베이터 표시창" if carry else None, ask_t=None, check_t=None, el_disp=None)
-            if carry:
+                           el_passed=False, stair=new_stair(), floor_temp=src == "엘리베이터 표시창",
+                           floor_src=src, ask_t=None, check_t=None, el_disp=None,
+                           elev_run=0, elev_in=False, hall_run=0, exit_cand=None, dir=None, far={},
+                           scan={"t": self.seg_start, "until": self.seg_start + SCAN_SEC, "reads": [], "evs": [],
+                                 "lw": [], "done": False, "why": None})
+            if carry and src == "엘리베이터 표시창":
                 self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
+            elif carry:
+                self.mem.event(self.clock, f"내린 층 {carry}층 (내림을 알기 전 복도 사진의 {src})")
+
+    def exit_sentence(self):
+        st = self.st
+        disp = f"표시창으로는 {st['floor']}층입니다. " if st["floor"] and st["floor_src"] == "엘리베이터 표시창" else ""
+        return f"엘리베이터에서 내렸습니다. {disp}{EXIT_SAY}"
+
+    def exit_elevator(self, source="버튼"):
+        """엘리베이터에서 내림 (웹 버튼 "내렸어요"). 반환: 바로 말할 문장들. EXIT_DUP초 안에 이미 내림을 처리했으면
+        (자동 감지 뒤에 버튼 등) 같은 하차로 보고 None."""
+        if self.last_exit is not None and self.clock - self.last_exit < EXIT_DUP:
+            self.mem.event(self.clock, f"내림 다시 받음 ({source}): {EXIT_DUP}초 안이라 같은 하차로 봄")
+            return None
+        if not self.records:  # 사진을 보내기 전에 눌러도 층이 바뀐 것으로 (새 구간)
+            self.seg_n = 1
+        self.new_segment(f"live_{self.si + 1}")
+        self.mem.event(self.clock, f"엘리베이터에서 내림 ({source})")
+        self.exit_say = False
+        return [self.exit_sentence()]
+
+    def watch_exit(self, obs, clock):
+        """자동 하차 감지 (2026-11-23 사용자 지시 B5): 엘리베이터 안 장면이 EXIT_IN장 이상 이어진 뒤 복도·홀 장면이
+        EXIT_OUT장 연속이면 버튼 "내렸어요"와 같은 처리. 반환: 감지했으면 기록용 dict."""
+        st = self.st
+        if obs["place"] == "in_elev":
+            st["elev_run"] += 1
+            st["hall_run"], st["exit_cand"] = 0, None
+            if st["elev_run"] >= EXIT_IN and not st["elev_in"]:
+                st["elev_in"] = True
+                self.mem.event(clock, f"엘리베이터 안 장면 {EXIT_IN}장 연속: 탄 것으로 봄")
+            if st["elev_in"]:  # 탔으면 층이 바뀔 수 있음: 계단처럼 다른 층 문패·층 표시 한 번이면 층을 바꾼다
+                st["floor_move"] = {**(st["floor_move"] or {"t": clock, "why": "엘리베이터 안"}), "last": clock}
+            return None
+        st["elev_run"] = 0
+        if not st["elev_in"] or obs["place"] not in HALL:
+            st["hall_run"], st["exit_cand"] = 0, None
+            return None
+        st["hall_run"] += 1
+        if st["hall_run"] == 1:
+            st["exit_cand"] = {"t": clock, "floor": st["floor"]}
+        if st["hall_run"] < EXIT_OUT:
+            return None
+        cand = st["exit_cand"]
+        st.update(elev_in=False, hall_run=0, exit_cand=None)
+        if self.last_exit is not None and clock - self.last_exit < EXIT_DUP:
+            self.mem.event(clock, f"자동 하차 감지했지만 {EXIT_DUP}초 안에 이미 내림 처리: 같은 하차로 봄")
+            return None
+        # 첫 복도 사진에서 이미 다른 층 문패로 층을 바꿨으면 그 층을 이어받는다 (새 구간이 지우지 않게)
+        keep = (st["floor"], st["floor_src"]) if st["floor"] and st["floor"] != cand["floor"] \
+            and st["floor_src"] != "엘리베이터 표시창" else None
+        seq = f"live_{self.si + 1}" if str(self.seq).startswith("live_") else f"{self.seq}+내림"  # 웹 기록 화면은 live_번호
+        self.new_segment(seq, start=cand["t"], keep=keep)
+        self.mem.event(clock, f"엘리베이터에서 내림 (자동 감지: 엘리베이터 안 {EXIT_IN}장 → 복도·홀 {EXIT_OUT}장)")
+        return {"t": cand["t"], "kept_floor": keep[0] if keep else None}
 
     # ------------------------------------------------------------ 재확인 대상
     def recheck_pick(self, obs):
@@ -234,15 +315,27 @@ class Navigator:
         plates = [p for p in obs["plates"] if p["n"] not in done and p.get("box")]
         if ROOM.match(target):
             near = [p for p in plates if ROOM.match(p["n"]) and p["n"][0] == target[0]
-                    and abs(int(p["n"]) - int(target)) <= 2]
+                    and abs(int(p["n"]) - int(target)) <= 2 and not self.quick_skips(p)]
             if near:
                 return near[0], "목적지 근처 번호"
         unread = [p for p in obs.get("unread", []) if p.get("box")]
         if unread and (st["floor"] is None or st["floor"] == tf):
             return unread[0], "번호 안 읽힌 문패"
-        # (2026-11-23 사용자 지시 A2) '층을 정할 번호'·'층 충돌 번호' 재확인은 하지 않는다: 목적지 후보와 번호를 못 읽은
-        # 문패만. 재확인이 있던 걸음은 찍은 뒤 반영까지 중앙값 4.26초(없을 때 3.05초, 휴대폰 기록 200장).
+        # (2026-11-23 사용자 지시) 층이 정해진 뒤에는 '층 충돌 번호' 재확인을 하지 않는다: 목적지 후보와 번호를 못 읽은 문패만.
+        # 재확인이 있던 걸음은 찍은 뒤 반영까지 중앙값 4.26초(없을 때 3.05초, 휴대폰 기록 200장).
+        # 층을 모르는 동안은 일반 문패도 재확인한다 (판단 지점 A6: 317을 한 번의 호출로 확정해야 4초에 3층).
+        if st["floor"] is None:
+            first = [p for p in plates if ROOM.match(p["n"]) and not self.quick_skips(p)]
+            if first:
+                return first[0], "층을 정할 번호"
         return None, None
+
+    def quick_skips(self, p):
+        """빠른 확인이 곧 사진 2장으로 확인할 목적지 번호면 첫 사진의 재확인을 건너뛴다 (첫 응답 앞당기기, 2026-11-23)."""
+        st = self.st
+        return (p["n"] == self.target and self.quick_max > 0 and st["quick"] is None and st["quick_n"] < self.quick_max
+                and not st["arrived"] and p.get("m") is not None and p["m"] <= QUICK_M
+                and not (self.mem.get(self.target) or {}).get("ok"))
 
     @staticmethod
     def quick_obs(plates, base=None):
@@ -267,6 +360,8 @@ class Navigator:
     def check_say(self, say, head=""):
         """층을 모를 때 '지금 층을 확인하고 있습니다…'를 말한다 (QUIET_SAY초 안에 이미 말했으면 되풀이하지 않음)."""
         st = self.st
+        if self.scanning():  # 내린 직후 둘러보기 중: 이미 "좌우로 비춰 주세요"라고 함
+            return
         if st["check_t"] is not None and self.clock - st["check_t"] < QUIET_SAY:
             if head:
                 say.append(head.strip())
@@ -275,17 +370,21 @@ class Navigator:
         st["check_t"], st["act"] = self.clock, "멈추고 둘러보기"
 
     # ------------------------------------------------------------ 한 걸음
-    def step(self, frames=None, t=None, observed=None, quick=False, rechecked=None):
+    def scanning(self):
+        sc = self.st.get("scan")
+        return bool(sc) and not sc["done"]
+
+    def step(self, frames=None, t=None, observed=None, quick=False, rechecked=None, heading=None):
         """frames: 1초 구간의 사진 파일 경로들 (영상 실행). t: 사진 찍은 시각(초, 겹쳐 보내기·웹),
         observed: 이미 받은 인식 결과(겹쳐 보내기에서 다른 스레드가 부른 것).
         quick: 문 앞 빠른 확인 사진(quick_obs 형식, 확대 재확인 안 함).
         rechecked: (cand, why, 재확인 결과) — 웹 서버가 상태 잠금 밖에서 미리 부른 확대 재확인 (2026-11-19 사용자 지시 1).
+        heading: 사진을 찍을 때 휴대폰 나침반 방향(도, 없으면 None). 내린 뒤 방향 정하기에 쓴다 (2026-11-23 B8).
         반환: 이 걸음의 기록."""
         st, target, tf = self.st, self.target, self.tf
         if t is not None:
             self.clock = t
-        si, clock = self.si, self.clock
-        first = self.seg_n == 0  # 구간(경로 시작·엘리베이터 하차)의 첫 걸음
+        clock = self.clock
         say, note = [], {}
         o = observed or self.runner.observe(frames)
         calls = [] if o["cached"] else [o["call"]]
@@ -301,6 +400,12 @@ class Navigator:
             return self._finish(o, None, [], say, note, latency, calls, error=err, recheck=None)
 
         self.mem.place(clock, cp.PLACE_KO.get(obs["place"]))
+        if not quick:  # 자동 하차 감지 (B5). 감지하면 이 사진부터 새 구간의 걸음
+            auto = self.watch_exit(obs, clock)
+            if auto:
+                note["auto_exit"] = auto
+        si = self.si
+        first = self.seg_n == 0  # 구간(경로 시작·엘리베이터 하차)의 첫 걸음
         # ---- 층 이동 가능 (2026-11-19 사용자 지시 2: 계단으로 층을 옮긴 경우)
         # 계단 장면이거나 층 표시가 보이면 표시해 두고, 그 뒤 다른 층 문패·층 표시가 또렷하면(확정 문패, 읽힌 층 표시)
         # 2번 연속을 기다리지 않고 바로 층을 바꾼다. 층이 바뀌면 지운다.
@@ -334,10 +439,11 @@ class Navigator:
                 st["act"] = "멈추고 둘러보기"
         if loc is not None:
             loc["places"].append(obs["place"])
-        if first and si > 0:
-            disp = f"표시창으로는 {st['floor']}층입니다. " if st["floor"] and st["floor_src"] == "엘리베이터 표시창" else ""
-            say.append(f"엘리베이터에서 내렸습니다. {disp}문패를 확인하며 천천히 이동하세요.")
-            st["act"] = "직진"
+        if first and si > 0:  # 내린 직후: 멈춰서 둘러보기 (B6). 웹 버튼은 응답에서 이미 말함
+            if self.exit_say:
+                say.append(self.exit_sentence())
+                self.exit_say = False
+            st["act"] = "멈추고 둘러보기"
 
         # ---- 출입문을 지났는가
         if st["door_phase"] and not (first and si == 0):
@@ -376,6 +482,11 @@ class Navigator:
                 recheck = {"why": why, "asked": cand["n"] or cand["name"], "read": rc["n"], "match": rc["match"]}
                 if cand["n"]:
                     rflag[cand["n"]] = rc["match"]
+                elif rc["n"] and rc["n"] in [p["n"] for p in plates]:
+                    # 이름만 읽힌 문패를 확대해 읽은 번호가 이 사진에서 읽힌 번호와 같음 = 그 번호를 확대해서 다시 읽은 것
+                    # (2026-11-23: q70 판단 지점 A6에서 '소재분석실' 확대가 317을 읽었는데 317 확정에 안 쓰여 층이 늦었음)
+                    rflag.setdefault(rc["n"], True)
+                    recheck["same_as"] = rc["n"]
                 elif rc["n"] and rc["n"] not in [p["n"] for p in plates]:  # 이름만 읽힌 문패의 번호를 확대해서 읽음
                     plates.append({**cand, "n": rc["n"], "from_recheck": True})
                     plates.sort(key=lambda p: p["m"] if p["m"] is not None else 99)
@@ -397,6 +508,12 @@ class Navigator:
                 rooms.append(target)
                 src[target] = tp
         rooms = [x for x in rooms if ROOM.match(x)] + [x for x in rooms if not ROOM.match(x)]
+        # 내린 뒤 엘리베이터에서 멀어지며(돌아가는 중이 아닐 때) 확정한 문패와 그 사진의 나침반 방향 (B8c: 다른 층에서
+        # 같은 끝자리 번호의 약한 근거). act는 이 걸음 전 것: 다른 층 문패를 처음 본 걸음도 넣는다.
+        for x in rooms:
+            if si > 0 and heading is not None and ROOM.match(x) and st["act"] != "엘리베이터로 돌아가기" \
+                    and x not in [d["n"] for d in self.plate_dirs]:
+                self.plate_dirs.append({"floor": x[0], "n": x, "h": heading, "t": clock})
 
         # ---- 계단 (2026-11-19 사용자 지시 3·4·5)
         stair = st["stair"]
@@ -626,7 +743,12 @@ class Navigator:
                 st["act"] = "직진"
                 self.mem.event(clock, "계단에서 나옴 (층 표시 없음)")
 
+        # ---- 내린 뒤 방향 근거 모으기 (B7·B8): 호실 범위 안내판·안내도, 목적지가 든 화살표, 둘러보며 읽은 문패
+        scanning = self.scanning()
+        self.collect_direction(obs, heading, clock, scanning)
+
         # ---- 진행 방향: 확정한 가까운(TREND_M 이내) 문패 번호가 목적지 번호에 가까워지는가
+        # 내린 직후 둘러보는 동안(B6)은 말하지 않고 방향 근거(보통)로만 모은다. 나침반이 있으면 몸을 돌리는 중이라 쓰지 않음.
         if ROOM.match(target) and not st["wrong_floor"] and st["floor"] == tf:
             # 목적지 문패 자신도 위치 표시(거리 0)로 넣는다: 목적지를 지나친 뒤 옆 번호가 보이면 '멀어짐'
             # (2026-11-17 410 경로: 410을 본 뒤 407→412에서 '방향이 맞습니다'라고 한 것을 고침)
@@ -639,6 +761,12 @@ class Navigator:
                 st["near_d"].append((n0, d, side, clock))
                 if n0 == target or prev is None:
                     pass  # 목적지 자신은 목적지 안내가 따로 말함
+                elif scanning:
+                    if heading is None and d != prev[1]:
+                        rel = "F" if d < prev[1] else "B"
+                        st["scan"]["evs"].append(dr.evidence(rel, None, dr.MEDIUM, f"문패 번호 {prev[0]}→{n0}", clock))
+                        st["trend_said"] = "toward" if d < prev[1] else "away"
+                        note["trend"] = f"{prev[0]}→{n0} " + ("가까워짐" if d < prev[1] else "멀어짐") + " (둘러보는 중, 방향 근거로)"
                 elif d < prev[1] and st["target_seen"] and st["trend_said"] == "away":
                     note["trend"] = f"{prev[0]}→{n0} 가까워짐이지만 목적지를 이미 지나쳐 말하지 않음"
                 elif d < prev[1]:
@@ -649,6 +777,22 @@ class Navigator:
                     say.append(f"{n0}호입니다. 목적지와 멀어지고 있습니다. 뒤로 돌아가세요.")
                     st["trend_said"], st["act"] = "away", "뒤로 돌기"
                     note["trend"] = f"{prev[0]}→{n0} 멀어짐"
+            # 먼 문패(목적지 ±3 밖) (B8d): 같은 쪽 벽 문패가 2번 연속 목적지에서 멀어지면 뒤로 (번호가 띄엄띄엄이라 한 번으로는 안 함)
+            if not scanning and not st["target_seen"]:
+                for x in floor_rooms:
+                    if x not in src or abs(int(x) - int(target)) <= NEIGHBOR or src[x]["side"] not in ("L", "R"):
+                        continue
+                    lst = st["far"].setdefault(src[x]["side"], [])
+                    if lst and lst[-1][0] == x:
+                        continue
+                    d = abs(int(x) - int(target))
+                    run = (lst[-1][2] + 1 if d > lst[-1][1] else 0) if lst else 0
+                    lst.append([x, d, run])
+                    if run >= 2 and st["trend_said"] != "away":
+                        say.append(f"{x}호입니다. 목적지와 멀어지고 있습니다. 뒤로 돌아가세요.")
+                        st["trend_said"], st["act"], st["far"] = "away", "뒤로 돌기", {}
+                        note["trend"] = "같은 쪽 벽 먼 문패 " + "→".join(y[0] for y in lst[-3:]) + " 멀어짐"
+                        break
 
         # ---- 목적지
         # 목적지 안전장치 (2026-11-18 사용자 지시): 목적지 번호·이름은 서로 다른 호출 2번에서 읽혀야 확정.
@@ -723,6 +867,9 @@ class Navigator:
             note["confirm_now"] = True
             st["quick"] = {"t": clock, "got": 0, "hit": False, "other": 0}
             st["quick_n"] += 1
+            if maybe:  # 아직 후보: 바로 멈추게 하고 그 말을 시작한 뒤 휴대폰이 2장을 찍는다 (2026-11-23)
+                say[:] = [x for x in say if "확인 중입니다" not in x] + [QUICK_SAY]
+                st["maybe_said"], st["act"] = True, "목적지 접근"
 
         # ---- 화살표 기록 (2초 연속 같은 방향일 때 사건으로)
         arrows = [a.get("to") for a in obs["arrows"]]
@@ -732,6 +879,8 @@ class Navigator:
                 self.mem.event(clock, f"화살표 표지 {arrows[0]}" + (f" ({lab})" if lab else ""))
             st["arrow_last"] = (arrows[0], self.n)
 
+        # ---- 내린 직후 둘러보기 끝, 방향 안내 (B6~B8)
+        say.extend(self.direction_step(heading, clock, bool(tgt or maybe), note))
         # ---- 위치 파악 시간 끝
         if st["loc"] is not None and clock + 1 >= st["loc"]["until"] and not st["arrived"]:
             say.extend(self.locate_end(st["loc"]))
@@ -752,6 +901,102 @@ class Navigator:
             say.append(self.situation(obs))
             st["last_say"] = clock
         return self._finish(o, obs, rooms, say, note, latency, calls, error=None, recheck=recheck)
+
+    # ------------------------------------------------------------ 내린 뒤 방향 (direction.py)
+    def collect_direction(self, obs, heading, clock, scanning):
+        """방향 근거를 모은다. 안내판·화살표(강)는 구간 내내, 둘러보며 읽은 문패와 긴 복도 방향은 둘러보는 동안만."""
+        st, target = self.st, self.target
+        if not ROOM.match(target) or st["arrived"] or self.si == 0 and not scanning:
+            return
+        sc = st["scan"]
+        evs = []
+        hit = dr.board_hit(obs.get("ranges"), target)
+        if hit:
+            evs.append(dr.evidence(hit["to"], heading, dr.STRONG, f"호실 범위 안내판 {hit['lo']}~{hit['hi']}", clock))
+        a = dr.arrow_hit(obs.get("arrows"), target)
+        if a:
+            evs.append(dr.evidence(a["to"], heading, dr.STRONG, f"화살표 표지 '{a.get('label')}'", clock))
+        if sc is not None:
+            sc["evs"].extend(evs)
+        if scanning:
+            for p in obs["plates"]:
+                if ROOM.match(p["n"]) and p["n"][0] == self.tf:
+                    sc["reads"].append({"h": heading, "side": p["side"], "m": p["m"], "n": p["n"], "photo": self.n})
+            if obs.get("long_way"):
+                sc["lw"].append(dr.evidence("F" if obs["long_way"] == "C" else obs["long_way"], heading, dr.NONE,
+                                            "복도가 길게 보이는 쪽", clock))
+        elif evs and st["floor"] in (None, self.tf) and not st["wrong_floor"]:
+            st["late_evs"] = evs  # 둘러보기 뒤에 본 안내판·화살표: direction_step이 바뀐 방향이면 다시 안내
+
+    def best_direction(self, heading):
+        """모은 근거 중 가장 센 것 (같은 세기면 나중 것). 같은 쪽 벽 문패 비교는 2개 이상 같은 결론이면 강, 1개면 보통."""
+        st, target = self.st, self.target
+        sc = st["scan"] or {"evs": [], "reads": [], "lw": []}
+        cands = list(sc["evs"])
+        wv = dr.wall_votes(sc["reads"], target)
+        if wv:
+            strength = dr.STRONG if wv["votes"] >= 2 else dr.MEDIUM
+            cands.append({"rel": wv["rel"], "abs": wv["abs"], "strength": strength,
+                          "basis": "같은 쪽 벽 문패 비교 " + ", ".join(wv["pairs"]), "t": self.clock})
+        if heading is not None and st["floor"] in (None, self.tf):  # 다른 층에서 같은 끝자리 번호를 본 방향 (약)
+            tail = int(target[1:])
+            prev = [d for d in self.plate_dirs if d["floor"] != self.tf and abs(int(d["n"][1:]) - tail) <= 2]
+            if prev:
+                d = min(prev, key=lambda d: (abs(int(d["n"][1:]) - tail), -d["t"]))
+                cands.append({"rel": "F", "abs": d["h"], "strength": dr.WEAK, "t": d["t"],
+                              "basis": f"{d['floor']}층에서 {d['n']}호를 본 방향 (끝자리 비교)"})
+        if sc["lw"]:
+            cands.append(sc["lw"][-1])
+        if not cands:
+            return None
+        best = max(cands, key=lambda e: (e["strength"], e["t"]))
+        return {**best, "rel_now": dr.now_rel(best, heading)}
+
+    def direction_step(self, heading, clock, target_seen, note):
+        """둘러보기를 끝낼지 정하고, 끝나면 방향을 한 번 안내한다. 둘러보기 뒤에는 더 센(또는 다른 방향의 강한) 근거가
+        오면 다시 안내한다. 반환: 말할 문장들."""
+        st, target, tf = self.st, self.target, self.tf
+        sc, out = st["scan"], []
+        if sc is None or not ROOM.match(target) or st["arrived"]:
+            return out
+        if not sc["done"]:
+            best = self.best_direction(heading)
+            why = ("목적지 보임" if target_seen else "다른 층" if st["wrong_floor"] and st["floor"] else
+                   "강한 방향 단서" if best and best["strength"] >= dr.STRONG else "시간" if clock >= sc["until"] else None)
+            # 보통 근거(문패 비교 1개)는 더 모을 수 있게 시간 끝까지 기다린다 (2개가 되면 '○쪽입니다'로 올라감)
+            if not why:
+                if st["act"] not in ("목적지 접근", "도착", "엘리베이터로 돌아가기"):
+                    st["act"] = "멈추고 둘러보기"
+                return out
+            sc.update(done=True, why=why)
+            self.mem.event(clock, f"둘러보기 끝 ({why}, {round(clock - sc['t'], 1)}초)")
+            if heading is not None:  # 몸을 돌리며 본 문패 순서는 진행 방향 판단에 쓰지 않음
+                st["near_d"] = []
+            if why in ("목적지 보임", "다른 층"):
+                return out
+            out.append(self.say_direction(best, floor_known=st["floor"] == tf, note=note))
+            return out
+        late = st.pop("late_evs", None)
+        if late:
+            ev = max(late, key=lambda e: e["t"])
+            ev = {**ev, "rel_now": dr.now_rel(ev, heading)}
+            cur = st["dir"]
+            if not cur or cur["strength"] < dr.STRONG or cur["rel_now"] != ev["rel_now"] and cur["basis"] != ev["basis"]:
+                out.append(self.say_direction(ev, floor_known=st["floor"] == tf, note=note))
+        return out
+
+    def say_direction(self, ev, floor_known, note):
+        st, target = self.st, self.target
+        if ev is None:
+            ev = {"rel": "F", "abs": None, "strength": dr.NONE, "basis": "단서 없음 (앞으로)", "t": self.clock, "rel_now": "F"}
+        rel = ev["rel_now"]
+        text = dr.sentence(target, rel, ev["strength"], long_way=ev["basis"] == "복도가 길게 보이는 쪽",
+                           floor_known=floor_known)
+        st["dir"] = {"rel_now": rel, "abs": ev["abs"], "strength": ev["strength"], "basis": ev["basis"], "t": self.clock}
+        st["act"] = dr.ACT[rel]
+        note["direction"] = {"rel": rel, "strength": dr.STRENGTH_KO[ev["strength"]], "basis": ev["basis"]}
+        self.mem.event(self.clock, f"방향 {dr.WORD[rel]} (근거 {dr.STRENGTH_KO[ev['strength']]}: {ev['basis']})")
+        return text
 
     def _quick_result(self, plates, say):
         """빠른 확인 사진 한 장의 결과를 센다. 2장이 다 오면: 목적지를 못 읽고 둘 다 다른 번호면 후보 취소."""
@@ -869,8 +1114,9 @@ def main():
     ap.add_argument("--cache", default=str(ROOT / "outputs/cache/claude_v2.jsonl"),
                     help="인식 캐시 (2단계 결과는 outputs/cache/claude.jsonl: say 칸이 있던 프롬프트)")
     ap.add_argument("--name", default="claude")
-    ap.add_argument("--prompt-version", type=int, default=4,
-                    help="인식 프롬프트 판 (4: 2026-11-23 엘리베이터 안 층 표시창, 3: 2026-11-19 계단 층 표시·엘리베이터 근거 4종, "
+    ap.add_argument("--prompt-version", type=int, default=5,
+                    help="인식 프롬프트 판 (5: 2026-11-23 호실 범위 안내판·긴 복도 방향·엘리베이터 안 기준, "
+                         "4: 2026-11-23 엘리베이터 안 층 표시창, 3: 2026-11-19 계단 층 표시·엘리베이터 근거 4종, "
                          "2: 이전 캐시 재생)")
     ap.add_argument("--start-floor", default=None, help="사용자가 말한 출발 층 (예: 1). 없으면 층 모름으로 시작")
     ap.add_argument("--send-quality", type=int, default=70,

@@ -419,7 +419,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                     return {"status": "stale", "seq": seq, "say": []}
                 t_cap = max(t_cap, float(ws.nav.clock) + 0.01) if ws.nav.records else t_cap
                 try:
-                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked)
+                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked, heading=heading)
                 except CreditLimit as e:  # 확대 재확인에서 한도
                     sync_credit(ws)
                     return stop(ws, str(e))
@@ -448,7 +448,8 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                          "arrived": st.get("arrived"), "rooms": rec["rooms"], "error": rec["error"],
                          "server_s": rec["server_s"], "see_s": rec["see_s"], "credit": ws.credit,
                          "target": ws.target, "detail": detail_of(ws),
-                         "confirm": bool(rec.get("confirm_now")), "quick": quick}
+                         "confirm": bool(rec.get("confirm_now")), "quick": quick,
+                         "exited": bool(rec.get("auto_exit")), "direction": rec.get("direction")}
                 ws.last_reply = reply
                 return reply
         finally:
@@ -463,15 +464,13 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         say = []
         with ws.alock:
             if body.type == "exited":  # 엘리베이터에서 내림 (영상 파일 모드는 두 번째 파일부터 자동)
-                if not ws.nav.records:  # 사진을 보내기 전에 눌러도 층이 바뀐 것으로 (새 구간)
-                    ws.nav.seg_n = 1
-                ws.nav.new_segment(f"live_{ws.nav.si + 1}")
-                # 리뷰 2: 지금까지 보낸 사진은 모두 이전 구간 → 결과가 와도 버린다 (구간 번호 + last_applied 둘 다)
+                # 리뷰 2: 지금까지 보낸 사진은 모두 이전 구간 → 결과가 와도 버린다 (구간 번호 + last_applied 둘 다).
+                # 휴대폰은 누를 때마다 구간 번호를 올리므로 서버도 늘 올린다 (같은 하차로 보는 경우에도).
                 ws.seg += 1
                 ws.last_applied = ws.seq
-                carry = ws.nav.st["floor"]
-                say = ["엘리베이터에서 내렸습니다. " + (f"표시창으로는 {carry}층입니다. 문패로 확인하겠습니다."
-                                                    if carry else "지금 층을 확인하겠습니다.")]
+                # 2026-11-23 B5·B6: 자동 하차 감지 뒤 20초 안에 누르면 같은 하차 (다시 처리하지 않음)
+                said = ws.nav.exit_elevator("버튼")
+                say = said if said is not None else ["엘리베이터에서 내린 것을 이미 확인했습니다."]
             elif body.type in ("end", "stop"):
                 ws.stopped, ws.stop_reason = True, {"end": "사용자가 끝냄", "stop": "관찰자 비상 정지"}[body.type]
                 say = ["안내를 마칩니다."] if body.type == "end" else ["안내를 멈췄습니다."]

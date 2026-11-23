@@ -63,24 +63,24 @@ def test_route_a_like():
     assert "오른쪽 벽" in " ".join(recs[7]["say"])
     nav.runner = ScriptRunner([O([("317", "C", 2.5, "door")])] * 2 + [O([("314", "C", 1.5, "door")])] * 4)
     recs = run(nav, 5, seg="2")
-    assert recs[0]["state"]["floor"] == "3" and recs[0]["action"] == "직진"
+    assert recs[0]["state"]["floor"] == "3" and recs[0]["action"] == "멈추고 둘러보기"  # 2026-11-23 B6: 내린 직후 둘러보기
     # 목적지 번호: 첫 호출(재확인 일치 포함)은 '확인 중'까지만, 두 번째 호출에서 확정.
     # 2026-11-19: 두 호출 모두 2m 안이면 두 번째에 확정과 도착이 함께 (전에는 세 번째에 도착)
-    assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["목적지 같습니다. 멈춰 주세요, 확인 중입니다."]
-    assert recs[2]["rooms"] == [] and recs[2]["recheck"]["match"] is True
+    assert recs[2]["action"] == "목적지 접근" and recs[2]["say"] == ["목적지 같습니다. 잠시 멈춰 주세요."]
+    assert recs[2]["rooms"] == [] and recs[2]["recheck"] is None  # 빠른 확인이 켜져 있어 목적지 재확인 건너뜀 (2026-11-23)
     assert recs[3]["action"] == "도착" and recs[3]["say"] == ["정면에 314호 문이 있습니다."]
     assert recs[4]["action"] == "도착" and recs[4]["say"] == []  # 도착 안내는 한 번만
-    # 317: 2026-11-23부터 층 판단용 재확인은 안 함. 정면 2.5m(정면 가까이) + 문 옆 + 1번 읽음 = 3점으로 한 번에 확정
-    assert recs[0]["recheck"] is None and recs[0]["state"]["floor"] == "3"
+    # 317: 층을 모르므로 재확인(층을 정할 번호) → 한 번에 확정
+    assert recs[0]["recheck"]["why"] == "층을 정할 번호" and recs[0]["state"]["floor"] == "3"
 
 
 def test_wrong_floor_after_exit():
     nav = nv.Navigator(ScriptRunner([O([("410", "L", 6.0, "door")])] * 3), "314")
     exited(nav)
-    # 2026-11-23: 층을 정할 번호는 재확인하지 않음 → 1번 읽음 + 문 옆 = 2점, 두 번째 호출(2번 읽음 + 문 옆)에 확정
-    recs = run(nav, 2)
-    assert recs[0]["recheck"] is None and recs[0]["state"]["floor"] is None
-    assert recs[1]["state"]["wrong_floor"] and recs[1]["action"] == "엘리베이터로 돌아가기"
+    # 층을 모르는 동안은 일반 문패도 재확인 (2026-11-23 보완): 1번 읽음 + 문 옆 + 재확인 일치 = 3점 → 첫 호출에 확정
+    recs = run(nav, 1)
+    assert recs[0]["recheck"]["why"] == "층을 정할 번호" and recs[0]["state"]["wrong_floor"]
+    assert recs[0]["action"] == "엘리베이터로 돌아가기"
 
 
 def test_recheck_mismatch_blocks():
@@ -102,8 +102,11 @@ def test_away_same_wall():
     script = [O([("317", "L", 3.0, "door")])] * 2 + [O([("316", "L", 3.0, "door")])] * 2
     nav = nv.Navigator(ScriptRunner(script), "318")
     exited(nav)
-    recs = run(nav, 4)
-    assert recs[2]["action"] == "뒤로 돌기" and "멀어지고" in recs[2]["say"][0]
+    recs = run(nav, 7)
+    # 2026-11-23 B6·B8: 내린 직후 둘러보는 중이라 317→316(멀어짐)은 말하지 않고 방향 근거(보통)로 모았다가 6초 끝에 안내
+    assert recs[2]["say"] == [] and recs[2]["action"] == "멈추고 둘러보기" and recs[2]["state"]["trend_said"] == "away"
+    assert recs[6]["action"] == "뒤로 돌기" and recs[6]["say"] == ["318호는 뒤쪽일 가능성이 높습니다. 뒤로 돌아 천천히 가면서 문패로 확인하겠습니다."]
+    assert recs[6]["direction"]["basis"] == "문패 번호 317→316"
 
 
 def test_no_trend_from_numbers_far_from_target():
@@ -126,12 +129,14 @@ def test_floor_conflict_needs_two_seconds():
 
 
 def test_quiet_repeats_rule_sentence():
-    script = [O([("317", "C", 2.0, "door")])] * 2 + [O()] * 12
+    script = [O([("317", "C", 2.0, "door")])] * 2 + [O()] * 16
     nav = nv.Navigator(ScriptRunner(script), "314")
     exited(nav)
-    recs = run(nav, 14)
+    recs = run(nav, 18)
     quiet = [r for r in recs if r["say"] == ["3층 복도입니다. 문패를 찾고 있습니다."]]  # 2026-11-19: 지금 상황 문장
-    assert quiet and quiet[0]["t"] - recs[0]["t"] == 10
+    # 2026-11-23 B6: 내린 뒤 6초 둘러보기 끝에 방향 안내 → 그 뒤 10초
+    assert recs[6]["say"] == ["앞으로 천천히 가세요. 문패로 방향을 확인하겠습니다."]
+    assert quiet and quiet[0]["t"] - recs[6]["t"] == 10
 
 
 def test_floor_sign_one_call():
@@ -146,7 +151,7 @@ def test_arrival_side_within_2m():
     nav = nv.Navigator(ScriptRunner(script), "410")
     exited(nav)
     recs = run(nav, 3)
-    assert recs[0]["say"][-1] == "목적지 같습니다. 멈춰 주세요, 확인 중입니다."
+    assert recs[0]["say"][-1] == "목적지 같습니다. 잠시 멈춰 주세요."
     assert recs[1]["action"] == "도착" and recs[1]["say"][-1] == "왼쪽 앞에 410호 문이 있습니다."  # 2026-11-19: 한 걸음 빨라짐
     assert recs[2]["say"] == []
 
@@ -158,21 +163,23 @@ def test_target_needs_two_calls_but_floor_plate_one():
     exited(nav)
     recs = run(nav, 4)
     assert recs[0]["rooms"] == ["412"] and recs[0]["state"]["floor"] == "4"
-    assert "목적지 같습니다, 확인 중입니다." in recs[0]["say"] and recs[0]["target_pending"]
+    assert nv.QUICK_SAY in recs[0]["say"] and recs[0]["target_pending"]  # 2026-11-23: 5m 안 후보 → 빠른 확인 문장
     assert recs[3]["rooms"] == ["410"] and "410호 문패가 11시 방향 약 3미터에 있습니다." in recs[3]["say"]
     assert nav.mem.get("410")["calls"] == 2
 
 
 def test_live_time_clock():
     """겹쳐 보내기: 걸음 간격 1.5초. 무안내 10초는 시간으로, 층 충돌 2번 연속은 걸음으로."""
-    script = [O([("317", "C", 2.0, "door")])] * 2 + [O()] * 7 + [O([("417", "C", 2.0, "door")])] * 2
+    script = [O([("317", "C", 2.0, "door")])] * 2 + [O()] * 12 + [O([("417", "C", 2.0, "door")])] * 2
     runner = ScriptRunner(script)
     nav = nv.Navigator(runner, "314")
     nav.new_segment("1")
     nav.step(["f.jpg"], t=0.0)
     nav.new_segment("2")
-    recs = [nav.step(["f.jpg"], t=1.0 + 1.5 * i) for i in range(11)]
+    recs = [nav.step(["f.jpg"], t=1.0 + 1.5 * i) for i in range(16)]
+    assert recs[4]["t"] == 7.0 and recs[4]["direction"]["basis"] == "단서 없음 (앞으로)"  # 둘러보기 6초 끝 (B6)
     assert [r["say"] for r in recs].count(["3층 복도입니다. 문패를 찾고 있습니다."]) == 1
+    assert [r["t"] for r in recs if r["say"] == ["3층 복도입니다. 문패를 찾고 있습니다."]] == [17.5]
     assert recs[-1]["state"]["floor"] == "4"
 
 
@@ -259,7 +266,7 @@ def test_confirm_and_arrive_overlap():
     nav = nv.Navigator(ScriptRunner([O([("410", "L", 1.8, "door")])] * 3), "410")
     exited(nav)
     recs = run(nav, 2)
-    assert recs[0]["action"] == "목적지 접근" and recs[0]["say"][-1] == "목적지 같습니다. 멈춰 주세요, 확인 중입니다."
+    assert recs[0]["action"] == "목적지 접근" and recs[0]["say"][-1] == "목적지 같습니다. 잠시 멈춰 주세요."
     assert recs[0]["confirm_now"] and recs[0]["rooms"] == []
     assert recs[1]["state"]["arrived"] and recs[1]["say"][-1] == "왼쪽 앞에 410호 문이 있습니다."
 
@@ -481,7 +488,7 @@ def test_in_elevator_display_sets_floor_and_carries_on_exit():
     nav.runner = ScriptRunner([O(), O([("315", "C", 2.5, "door")])])
     recs = run(nav, 2, seg="2")
     assert recs[0]["state"]["floor"] == "4" and recs[0]["state"]["floor_temp"]
-    assert recs[0]["say"][0] == "엘리베이터에서 내렸습니다. 표시창으로는 4층입니다. 문패를 확인하며 천천히 이동하세요."
+    assert recs[0]["say"][0] == "엘리베이터에서 내렸습니다. 표시창으로는 4층입니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
     assert recs[1]["state"]["floor"] == "3" and recs[1]["state"]["wrong_floor"]
 
 
@@ -624,7 +631,9 @@ def nav4(script, target="410"):
 def test_recheck_only_target_candidate_or_unread():
     nav = nv.Navigator(ScriptRunner([O()]), "410")
     exited(nav)
-    assert nav.recheck_pick(O([("317", "L", 5.0, "door")])) == (None, None)       # 층을 정할 번호: 안 함
+    assert nav.recheck_pick(O([("317", "L", 5.0, "door")]))[1] == "층을 정할 번호"   # 층 모름: 일반 문패도
+    nav.st["floor"] = "4"
+    assert nav.recheck_pick(O([("317", "L", 5.0, "door")])) == (None, None)       # 층을 안 뒤: 안 함
     assert nav.recheck_pick(O([("411", "L", 5.0, "door")]))[1] == "목적지 근처 번호"
     assert nav.recheck_pick(O(unread=["강의실3"]))[1] == "번호 안 읽힌 문패"
 
@@ -635,7 +644,8 @@ def test_quick_trigger_5m_two_photos_confirm_and_arrive():
     nav = nv.Navigator(ScriptRunner([O([("410", "L", 4.5, "wall")])], rechecks={"410": ""}), "410")
     exited(nav)
     r = nav.step(["f.jpg"], t=1.5)
-    assert r["confirm_now"] and r.get("target_pending") and r["say"][-1] == "목적지 같습니다, 확인 중입니다."
+    assert r["confirm_now"] and r.get("target_pending") and r["say"][-1] == nv.QUICK_SAY
+    assert r["recheck"] is None or r["recheck"]["asked"] != "410"  # 빠른 확인이 켜져 있으면 목적지 재확인 건너뜀
     r1 = nav.step(t=2.2, observed=qo(2.2, [("410", "L", 1.8, "wall")]), quick=True)
     assert r1["state"]["arrived"] and r1["say"] == ["왼쪽 앞에 410호 문이 있습니다."] and r1["action"] == "도착"
     assert any("빠른 확인, 서로 다른 사진 2장" in e["text"] for e in nav.mem.events)  # 문 옆이 아니어도(벽) 2장이면 확정
@@ -702,3 +712,214 @@ def test_perceiver_send_quality_and_passthrough(tmp_path):
     assert base64.b64decode(seen[0][0]["source"]["data"]) == f.read_bytes()   # 작은 JPEG는 그대로
     assert p._key("see", f).endswith("|q70") and "|q70" not in p._key("recheck", f, "1,2,3,4")
     assert cp.Perceiver(fc)._key("see", f).endswith("|")   # 품질 90은 이전 캐시 키 그대로
+
+
+# ---------------------------------------------------------------- 2026-11-23 (B) 엘리베이터에서 내린 뒤
+IE = O(place="in_elev")
+RIDE = [IE] * nv.EXIT_IN
+HALLS = [O(place="elev_hall")] * nv.EXIT_OUT
+EXIT_SAY = "엘리베이터에서 내렸습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
+
+
+def steps(nav, obs_list, t0=0.0, dt=1.5, heading=None):
+    """웹처럼 시각(t)과 나침반 방향(heading: 숫자 또는 장마다 목록)을 주고 걸음을 넣는다."""
+    out = []
+    for i, ob in enumerate(obs_list):
+        h = heading[i] if isinstance(heading, list) else heading
+        o = {"key": "f.jpg", "keys": ["f.jpg"], "pick_seconds": 0, "obs": ob, "cached": False,
+             "call": {"seconds": 1.0, "credit": 0.1}}
+        out.append(nav.step(t=t0 + dt * i, observed=o, rechecked=(None, None, None), heading=h))
+    return out
+
+
+def live_nav(target="410", start_floor="1"):
+    nav = nv.Navigator(ScriptRunner([O()]), target, start_floor=start_floor)
+    nav.announce = False
+    nav.new_segment("live_0")
+    return nav
+
+
+def test_auto_exit_after_in_elevator_then_hall():
+    """엘리베이터 안 2장 → 복도·홀 2장 연속이면 내린 것으로 (버튼과 같은 처리, 문장 한 번)."""
+    nav = live_nav()
+    recs = steps(nav, [O()] + RIDE + HALLS + [O()])
+    k = 1 + nv.EXIT_IN + nv.EXIT_OUT - 1  # 마지막 복도 사진
+    assert nav.si == 1 and recs[k].get("auto_exit") and recs[k]["seq"] == "live_1"
+    assert not any(r.get("auto_exit") for r in recs[:k])
+    assert recs[k]["say"] == [EXIT_SAY] and recs[k]["action"] == "멈추고 둘러보기"
+    assert recs[k]["state"]["floor"] is None  # 층은 새로 확인 (1층에서 탔으므로 1층이 아님)
+    assert nav.seg_start == recs[1 + nv.EXIT_IN]["t"]  # 구간 시작 = 첫 복도 사진
+    assert recs[k + 1]["say"] == []  # 되풀이하지 않음
+    # 그 뒤 버튼 "내렸어요" → 같은 하차 (다시 처리하지 않음)
+    assert nav.exit_elevator("버튼") is None and nav.si == 1
+
+
+def test_no_auto_exit_without_two_in_elevator_or_two_halls():
+    nav = live_nav()
+    steps(nav, [IE] * (nv.EXIT_IN - 1) + HALLS + RIDE + HALLS[:-1] + [O(place="unknown")] + HALLS[:-1])
+    assert nav.si == 0  # 안 장면이 모자람 / 복도·홀이 연속이 아님
+
+
+def test_button_exit_then_auto_exit_is_same():
+    nav = live_nav()
+    steps(nav, [O()] + RIDE)
+    assert nav.exit_elevator("버튼") == [EXIT_SAY] and nav.si == 1
+    recs = steps(nav, RIDE + HALLS, t0=6.0)  # 일찍 눌러서 아직 안 장면 → 20초 안에 자동 감지돼도 같은 하차
+    assert nav.si == 1 and not any(r.get("auto_exit") for r in recs)
+
+
+def test_in_elevator_display_then_auto_exit_carries_floor():
+    """B9: 엘리베이터 안 층 표시창(4)을 읽고 자동 하차 → 내린 층 임시 4층, 문장에 표시창 층, 다른 층 문패 한 번이면 문패."""
+    nav = live_nav()
+    ie4 = dict(IE, elev_floor="4")
+    recs = steps(nav, [IE, ie4, ie4] + HALLS)
+    assert recs[1]["state"]["floor"] == "4" and recs[1]["say"] == ["엘리베이터 표시창이 4층입니다. 목적지 층입니다."]
+    r = recs[-1]
+    assert r.get("auto_exit") and r["state"]["floor"] == "4" and r["state"]["floor_temp"]
+    assert r["say"][0] == "엘리베이터에서 내렸습니다. 표시창으로는 4층입니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
+    r = steps(nav, [O([("315", "C", 2.5, "door")])], t0=12.0)[0]
+    assert r["state"]["floor"] == "3" and r["state"]["wrong_floor"] and r["action"] == "엘리베이터로 돌아가기"
+
+
+def test_auto_exit_keeps_floor_from_first_hall_photo():
+    """첫 복도 사진에서 이미 다른 층 문패로 층을 바꿨으면, 두 번째 복도 사진에서 내림을 알아도 그 층을 이어받는다."""
+    nav = live_nav()
+    recs = steps(nav, RIDE + [O([("405", "C", 2.5, "door")])] + HALLS[1:])
+    k = nv.EXIT_IN
+    assert recs[k]["state"]["floor"] == "4"
+    assert recs[-1].get("auto_exit") == {"t": recs[k]["t"], "kept_floor": "4"} and recs[-1]["state"]["floor"] == "4"
+
+
+def test_exit_wrong_floor_ends_scan_without_direction():
+    """다른 층에서 내림: 둘러보기를 바로 끝내고 엘리베이터로 돌아가기 (방향 안내 없음)."""
+    nav = live_nav()
+    recs = steps(nav, RIDE + HALLS + [O([("310", "C", 2.5, "door")])])
+    r = recs[-1]
+    assert r["state"]["floor"] == "3" and r["action"] == "엘리베이터로 돌아가기" and "direction" not in r
+    assert r["state"]["scan"]["done"] and r["state"]["scan"]["why"] == "다른 층"
+    assert "엘리베이터로 돌아가 4층을 누르세요" in " ".join(r["say"])
+
+
+def test_scan_holds_progress_guidance_up_to_6s():
+    """내린 직후 6초 동안은 진행 안내를 하지 않는다 (층을 알아도). 6초 끝에 단서가 없으면 앞으로."""
+    nav = nv.Navigator(ScriptRunner([O([("405", "C", 2.5, "door")])] + [O()] * 8), "410")
+    exited(nav)
+    recs = run(nav, 8)
+    assert recs[0]["state"]["floor"] == "4" and recs[0]["action"] == "멈추고 둘러보기"
+    assert all(r["action"] == "멈추고 둘러보기" for r in recs[:6]) and not any("직진" in x for r in recs[:6] for x in r["say"])
+    assert recs[6]["say"] == ["앞으로 천천히 가세요. 문패로 방향을 확인하겠습니다."] and recs[6]["action"] == "직진"
+    assert recs[6]["direction"] == {"rel": "F", "strength": "없음", "basis": "단서 없음 (앞으로)"}
+    assert any("방향 정면 (근거 없음: 단서 없음 (앞으로))" in e["text"] for e in nav.mem.events)
+
+
+def test_room_range_board_gives_direction():
+    """B7: 호실 범위 안내판에 목적지가 들면 바로 그 방향 ('○호는 오른쪽입니다. 오른쪽으로 가세요'), 둘러보기 끝."""
+    nav = live_nav()
+    exited_obs = RIDE + HALLS[1:] + [dict(O(), ranges=[{"lo": 401, "hi": 410, "to": "R"}, {"lo": 411, "hi": 420, "to": "L"}])]
+    recs = steps(nav, exited_obs)
+    r = recs[-1]
+    assert r["say"] == [EXIT_SAY, "410호는 오른쪽입니다. 오른쪽으로 가세요."] and r["action"] == "오른쪽"
+    assert r["direction"] == {"rel": "R", "strength": "강", "basis": "호실 범위 안내판 401~410"}
+    assert r["state"]["scan"]["why"] == "강한 방향 단서"
+
+
+def test_board_direction_uses_compass_when_user_turns():
+    """나침반이 있으면 안내판을 본 방향을 절대 방향으로 두었다가, 지금 사용자 기준으로 말한다."""
+    nav = live_nav()
+    steps(nav, RIDE + HALLS, heading=0.0)  # 내림, 둘러보는 중
+    # 동쪽(90도)을 보며 '←' 안내판(목적지 범위) → 북쪽(0도)이 목적지 쪽. 지금 동쪽을 보므로 왼쪽
+    board = dict(O(), ranges=[{"lo": 405, "hi": 412, "to": "L"}])
+    r = steps(nav, [board], t0=9.0, heading=90.0)[0]
+    assert r["state"]["dir"]["abs"] == 0.0 and r["say"] == ["410호는 왼쪽입니다. 왼쪽으로 가세요."]
+    # 북쪽으로 돌아 같은 안내판을 다시 봄(이번엔 '↑'로 보임): 같은 근거라 다시 말하지 않음
+    r = steps(nav, [dict(O(), ranges=[{"lo": 405, "hi": 412, "to": "F"}])], t0=11.0, heading=0.0)[0]
+    assert r["say"] == []
+    # 둘러보기 뒤 다른 안내판이 반대쪽을 가리키면 다시 안내 (나중 근거를 따름)
+    r = steps(nav, [dict(O(), arrows=[{"to": "B", "label": "410"}])], t0=18.0, heading=0.0)[0]
+    assert r["say"] == ["410호는 뒤쪽입니다. 뒤로 돌아가세요."] and r["action"] == "뒤로 돌기"
+
+
+def test_arrow_with_target_number():
+    nav = live_nav()
+    r = steps(nav, RIDE + HALLS[1:] + [dict(O(), arrows=[{"to": "L", "label": "401~415"}])])[-1]
+    assert r["action"] == "왼쪽" and r["direction"]["basis"] == "화살표 표지 '401~415'"
+
+
+def test_scan_wall_plates_with_compass_two_votes():
+    """B8b: 둘러보며 나침반 방향과 문패를 모아 같은 쪽 벽끼리 비교. 두 벽이 같은 결론(2개) → '○쪽입니다'.
+    북(0도)을 볼 때 왼쪽 벽 405(2m)→407(6m): 북쪽이 목적지 쪽. 남(180도)을 볼 때 왼쪽 벽 404(2m)→402(6m): 역시 북쪽.
+    지금 남쪽을 보고 있으므로 '뒤쪽'."""
+    nav = live_nav()
+    steps(nav, RIDE + HALLS, heading=0.0)
+    recs = steps(nav, [O([("405", "L", 2.0, "door"), ("407", "L", 6.0, "door")]),
+                       O([("404", "L", 2.0, "door"), ("402", "L", 6.0, "door")])], t0=9.0, heading=[0.0, 180.0])
+    r = recs[1]
+    assert r["direction"]["strength"] == "강" and r["direction"]["basis"].startswith("같은 쪽 벽 문패 비교")
+    assert r["say"][-1] == "410호는 뒤쪽입니다. 뒤로 돌아가세요." and r["action"] == "뒤로 돌기"
+    assert r["state"]["scan"]["why"] == "강한 방향 단서"
+
+
+def test_scan_wall_plates_one_vote_waits_then_maybe():
+    """비교가 1개뿐이면 6초 끝에 '○쪽일 가능성이 높습니다' (보통)."""
+    nav = live_nav()
+    steps(nav, RIDE + HALLS, heading=0.0)  # 첫 복도 4.5초 = 구간 시작 → 10.5초에 끝
+    recs = steps(nav, [O([("405", "L", 2.0, "door"), ("407", "L", 6.0, "door")]), O(), O(), O()], t0=9.0, heading=0.0)
+    assert recs[0]["say"] == [] or "가능성" not in " ".join(recs[0]["say"])
+    r = recs[1]
+    assert r["t"] == 10.5 and r["say"] == ["410호는 정면일 가능성이 높습니다. 천천히 가면서 문패로 확인하겠습니다."]
+    assert r["direction"]["strength"] == "보통"
+
+
+def test_scan_without_compass_compares_same_photo_only():
+    """나침반이 없으면 다른 사진의 문패끼리는 비교하지 않는다 (몸을 돌린 정도를 모름)."""
+    nav = nv.Navigator(ScriptRunner([O([("405", "L", 2.0, "door")]), O([("407", "L", 6.0, "door")])] + [O()] * 6), "410")
+    nav.st["floor"] = "4"
+    exited(nav)
+    recs = run(nav, 7)
+    assert recs[6]["direction"]["basis"] == "단서 없음 (앞으로)"
+    nav2 = nv.Navigator(ScriptRunner([O([("405", "L", 2.0, "door"), ("407", "L", 6.0, "door")])] + [O()] * 6), "410")
+    exited(nav2)
+    recs = run(nav2, 7)
+    assert recs[6]["direction"]["basis"].startswith("같은 쪽 벽 문패 비교 405→407") and recs[6]["action"] == "직진"
+
+
+def test_previous_floor_same_tail_is_weak():
+    """B8c: 3층에서 내려 엘리베이터에서 걸어가며 310을 동쪽(90도)에서 봄 → 4층에서 단서가 없으면 410은 그쪽일 수 있음 (약)."""
+    nav = live_nav()
+    steps(nav, RIDE + HALLS, heading=90.0)
+    steps(nav, [O([("310", "C", 2.5, "door")])] * 2, t0=9.0, heading=90.0)  # 3층 (다른 층) → 엘리베이터로 돌아가기
+    assert nav.plate_dirs and nav.plate_dirs[0]["n"] == "310" and nav.plate_dirs[0]["h"] == 90.0
+    steps(nav, RIDE, t0=40.0, heading=0.0)
+    recs = steps(nav, [O()] * 9, t0=45.0, heading=270.0)  # 4층, 서쪽을 봄
+    r = next(r for r in recs if "direction" in r)
+    assert r["direction"] == {"rel": "B", "strength": "약", "basis": "3층에서 310호를 본 방향 (끝자리 비교)"}
+    assert r["say"] == ["410호는 뒤쪽일 수 있습니다. 뒤로 돌아 천천히 가면서 문패로 층과 방향을 확인하겠습니다."]
+
+
+def test_long_way_when_no_clue():
+    """B8d: 단서가 없으면 복도가 길게 보이는 쪽."""
+    nav = live_nav()
+    recs = steps(nav, RIDE + HALLS + [dict(O(), long_way="R")] * 5)
+    r = next(r for r in recs if "direction" in r)
+    assert r["say"] == ["복도가 길게 보이는 오른쪽으로 천천히 가세요. 문패로 층과 방향을 확인하겠습니다."] and r["action"] == "오른쪽"
+
+
+def test_far_plates_same_wall_two_steps_away():
+    """B8d: 목적지 ±3 밖 같은 쪽 벽 문패가 2번 연속 멀어지면 뒤로. 한 번(문패 2개)으로는 말하지 않음."""
+    plates = [O([("420", "L", 3.0, "door")])] * 2 + [O([("422", "L", 3.0, "door")])] * 2 + [O([("425", "L", 3.0, "door")])] * 2
+    nav = nv.Navigator(ScriptRunner([O()] * 7 + plates), "410")
+    nav.st["floor"] = "4"
+    exited(nav)
+    nav.st["floor"] = "4"
+    recs = run(nav, 13)
+    assert not any("멀어지고" in x for r in recs[:11] for x in r["say"])
+    assert recs[11]["say"] == ["425호입니다. 목적지와 멀어지고 있습니다. 뒤로 돌아가세요."] and recs[11]["action"] == "뒤로 돌기"
+
+
+def test_recheck_of_name_plate_reads_same_number():
+    """이름만 읽힌 문패를 확대해 읽은 번호가 이 사진의 번호와 같으면 그 번호의 재확인 일치 (q70 판단 지점 A6)."""
+    nav = nv.Navigator(ScriptRunner([O([("317", "L", 3.0, "wall")], unread=["소재분석실"])],
+                                    rechecks={"소재분석실": "317"}), "314")
+    exited(nav)
+    r = run(nav, 1)[0]
+    assert r["recheck"]["same_as"] == "317" and r["state"]["floor"] == "3"

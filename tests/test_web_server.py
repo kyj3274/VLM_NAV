@@ -187,8 +187,11 @@ def test_voice_whisper_and_retry(tmp_path):
 def test_exited_before_any_frame_is_new_segment(tmp_path):
     c, _ = app_with(tmp_path)
     sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
-    assert c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()["segment"] == 1
-    assert frame(c, sid, 0.0)["say"][0].startswith("엘리베이터에서 내렸습니다")
+    r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
+    assert r["segment"] == 1 and r["say"] == ["엘리베이터에서 내렸습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."]
+    # 2026-11-23: 버튼 응답에서 말했으므로 첫 사진에서 되풀이하지 않음 (전에는 두 번 말함)
+    f = frame(c, sid, 0.0)
+    assert not any(x.startswith("엘리베이터에서 내렸습니다") for x in f["say"]) and f["action"] == "멈추고 둘러보기"
 
 
 def test_exited_and_destination_change(tmp_path):
@@ -298,7 +301,7 @@ def test_review2_exited_drops_photos_from_before(tmp_path):
     th.start()
     time.sleep(0.15)
     r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
-    assert r["seg"] == 1
+    assert r["seg"] == 1 and r["say"][0].startswith("엘리베이터에서 내렸습니다")
     th.join()
     assert out[1]["status"] == "stale" and out[1]["reason"] == "old_segment"
     late = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
@@ -307,7 +310,7 @@ def test_review2_exited_drops_photos_from_before(tmp_path):
     new = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
                  data={"t": "2.0", "seg": "1"}).json()
     assert new["status"] == "ok" and new["seg"] == 1
-    assert new["say"][0].startswith("엘리베이터에서 내렸습니다")  # 새 구간의 첫 걸음은 이 사진
+    assert new["say"][0] == "4층이 맞습니다." and new["action"] == "멈추고 둘러보기"  # 새 구간의 첫 걸음은 이 사진
     m = c.get(f"/api/session/{sid}", headers=H).json()["detail"]
     assert m["counts"]["old_segment"] == 2 and m["counts"]["applied"] == 1
     ws = c.app.state.sessions[sid]
@@ -347,3 +350,23 @@ def test_voice_here_floor_whisper(tmp_path):
 def test_parse_here_floor_with_destination(text, here):
     from dest_parse import parse_destination
     assert parse_destination(text)["here"] == here
+
+
+def test_auto_exit_then_button_is_same_exit(tmp_path):
+    """2026-11-23 B5: 엘리베이터 안 2장 → 복도 2장이면 서버가 스스로 내림 처리(응답 exited). 그 뒤 "내렸어요"는 같은 하차."""
+    inside = {**BASE, "place": "in_elev"}
+    hall = {**BASE, "place": "elev_hall"}
+    factory = scripted_factory([inside] * 3 + [hall] * 3 + [{**BASE, "rr": [["401", "410", "R"]]}], [0.0] * 7)
+    c, _ = app_with(tmp_path, factory=factory)
+    sid = c.post("/api/session", headers=H, json={"destination": "410"}).json()["session_id"]
+    rs = [frame(c, sid, 1.5 * i) for i in range(6)]
+    assert not rs[4]["exited"] and rs[5]["exited"] and rs[5]["action"] == "멈추고 둘러보기"
+    assert rs[5]["say"][0] == "엘리베이터에서 내렸습니다. 잠시 멈춰서 휴대폰을 천천히 좌우로 비춰 주세요."
+    r = c.post(f"/api/session/{sid}/event", headers=H, json={"type": "exited"}).json()
+    assert r["segment"] == 1 and r["say"] == ["엘리베이터에서 내린 것을 이미 확인했습니다."]
+    ws = c.app.state.sessions[sid]
+    assert ws.nav.si == 1 and ws.seg == 1  # 휴대폰 구간 번호와 맞추려고 seg는 올림
+    r = c.post(f"/api/session/{sid}/frame", headers=H, files={"image": ("f.jpg", jpg(), "image/jpeg")},
+               data={"t": "9.0", "heading": "90", "seg": "1"}).json()
+    assert r["say"] == ["410호는 오른쪽입니다. 오른쪽으로 가세요."] and r["direction"]["strength"] == "강"
+    assert ws.nav.records[-1]["heading"] == 90.0
