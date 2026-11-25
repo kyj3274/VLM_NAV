@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nav"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import floor as fw  # noqa: E402
+import bench_floor  # noqa: E402  (재생 화면용 머릿속 지도)
 import navigator as nv  # noqa: E402  (core 경로를 넣음)
 import depth  # noqa: E402  core: 깊이로 문패 벽 쪽 정하기
 import world  # noqa: E402
@@ -259,7 +260,7 @@ def episode(W, seed, mode="number", show=False, trace=None, islands=0):
         events = [e["text"] for e in nav.mem.events if e["t"] == nav.clock and not e["text"].startswith("안내:")]
         if trace is not None:
             trace.append({"t": t, "p": w.p, "b": w.b, "yaw": w.yaw, "say": say, "act": act, "seen": seen, "events": events,
-                          "walked": w.walked, "junction": obs.get("junction")})
+                          "walked": w.walked, "junction": obs.get("junction"), "mind": bench_floor.mind(nav, w.sensor()["heading"])})
         if show:
             print(f"{t:6.1f}s ({w.p[0]:5.1f},{w.p[1]:5.1f}) {w.b:3.0f}°{'↺' if w.yaw else ' '} [{','.join(seen)}] {act} | {' / '.join(say)}")
         if act == "도착" or "문패를 확인하지 못했습니다" in text:

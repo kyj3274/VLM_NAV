@@ -29,6 +29,21 @@ SUCCESS_M = 4.0
 MIN_PATH = 8.0     # 시작과 목적지 사이 최소 길 거리
 
 
+def mind(nav, heading):
+    """재생 화면용: Navigator가 머릿속에 가진 지도 (판단은 안 바꿈). 갈림길 그래프(core/floor_graph.py)의 위치·갈림길·가지,
+    도착 추정(core/arrival.py)의 목적지 점, 복도 그래프(core/nav_graph.py)의 마지막 방향 판단. 좌표는 걸음 수·방위로 잡은 것."""
+    f, a = nav.floor, nav.arrival
+    spot = None
+    if a.mem and a.mem.get("spot") and f.pos is not None:  # 도착 추정은 자기 원점을 씀: 지금 위치 차이만큼 옮겨 같은 그림에
+        spot = (a.mem["spot"][0] - a.pos[0] + f.pos[0], a.mem["spot"][1] - a.pos[1] + f.pos[1])
+    edges = [{"ends": sorted(e["ends"]), "dead": e["dead"], "nums": [min(e["nums"]), max(e["nums"])] if e["nums"] else None}
+             for e in f.edges]
+    d = nav.st.get("dir_last") or {}
+    return {"pos": f.pos, "head": heading, "junc": [j["p"] for j in f.junctions],
+            "br": [[j, c, e] for (j, c), e in f.branch.items()], "edges": edges, "edge": f.edge,
+            "spot": spot, "dir": d.get("direction"), "p_ahead": d.get("p_ahead")}
+
+
 def episode(kind, seed, mode="number", signs=0.0, show=False, trace=None):
     rng = random.Random(seed)
     fl = fw.make_floor(kind, mode, signs, rng)
@@ -60,7 +75,7 @@ def episode(kind, seed, mode="number", signs=0.0, show=False, trace=None):
                 trace.append({"floor": fl, "target": {**tgt, "c": tc["id"]}, "kind": kind, "seed": seed})
             trace.append({"t": t, "c": w.c, "x": round(w.x, 2), "h": w.h, "yaw": w.yaw, "say": say, "act": act,
                           "seen": [p["n"] for p in obs["plates"]] + (["★"] if obs.get("dest", {}).get("seen") else []),
-                          "junction": obs.get("junction"),
+                          "junction": obs.get("junction"), "mind": mind(nav, w.sensor()["heading"]),
                           "events": [e["text"] for e in nav.mem.events if e["t"] == nav.clock and not e["text"].startswith("안내:")]})
         if show:
             j = obs.get("junction")

@@ -5,6 +5,8 @@
   .venv/bin/python src/sim/view_floor.py --layouts loop --seeds 9 12
 
 그림: 복도, 문(목적지 강조, 이번 사진에 읽힌 문패 파랑), 사용자(삼각형)와 카메라 시야, 지나온 길, 표지판 있는 갈림길(■).
+머릿속 지도: Navigator가 걸음 수·방위로 믿는 내 위치와 걸은 길, 갈림길과 가지(가 봄 / 끝까지 감 / 안 가 봄), 가지에서 본 번호,
+  목적지 추정 점(★), 복도 번호 흐름의 방향 판단. 실제 그림과 좌표가 다를 수 있음 (그 차이가 위치 추정 오차).
 오른쪽: 안내 문장, 행동, 보인 갈림길, 판단 근거(사건), 안내 기록.
 """
 
@@ -44,14 +46,18 @@ svg{width:100%;height:auto;display:block;max-height:70vh}.ctl{display:flex;gap:8
 .log{max-height:300px;overflow:auto;font-size:13px}.log div{padding:2px 0;border-bottom:1px dashed var(--line);cursor:pointer}.log .cur{font-weight:600}
 .row{display:flex;justify-content:space-between;gap:8px}.legend{font-size:12px;color:var(--mute);margin-top:8px}
 .legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 10px;vertical-align:-1px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:1200px){.two{grid-template-columns:1fr}}
+.cap{font-size:12px;color:var(--mute);margin-bottom:4px}.cap b{color:var(--ink)}
 </style></head><body>
 <header><h1>층 시뮬레이터 재생</h1><select id="ep"></select><span id="res" class="res"></span><span id="info" class="k"></span></header>
 <main>
- <div class="card"><svg id="map"></svg>
+ <div class="card"><div class="two"><div><div class="cap"><b>실제</b> (시뮬레이터 정답)</div><svg id="map"></svg></div>
+  <div><div class="cap"><b>머릿속 지도</b> (Navigator가 믿는 것) <span id="mcap"></span></div><svg id="mind"></svg></div></div>
   <div class="ctl"><button id="play">▶ 재생</button><button id="prev">◀</button><button id="next">▶</button>
    <input id="slider" type="range" min="0" value="0"><select id="speed"><option value="1">1배</option><option value="3" selected>3배</option><option value="8">8배</option></select></div>
   <div class="legend"><span style="background:var(--target)"></span>목적지 <span style="background:var(--seen)"></span>이번 사진에 읽힌 문패
-   <span style="background:var(--trail)"></span>지나온 길 <span style="background:var(--sign)"></span>표지판 있는 갈림길 <span style="background:var(--fov)"></span>카메라 시야</div>
+   <span style="background:var(--trail)"></span>지나온 길 <span style="background:var(--sign)"></span>표지판 있는 갈림길 <span style="background:var(--fov)"></span>카메라 시야
+   <br>머릿속: ● 갈림길 · 실선 가 본 가지 · 끝에 막대 = 끝까지 감 · 점선 = 안 가 본 가지 · ★ 목적지 추정 위치</div>
  </div>
  <div>
   <div class="card"><div class="row"><div><div class="k">시각</div><div class="big" id="t"></div></div>
@@ -95,6 +101,7 @@ function draw() {
     `${X(f.p[0]) + fw*Math.sin(u) + dx*Math.cos(u)},${Y(f.p[1]) - fw*Math.cos(u) + dx*Math.sin(u)}`).join(" ");
   s += `<polygon points="${tri}" fill="var(--user)"/></svg>`;
   $("map").outerHTML = s.replace("<svg", '<svg id="map"');
+  drawMind(e, f);
   $("t").textContent = f.t.toFixed(1) + "초"; $("act").textContent = f.act || "-"; $("walked").textContent = f.walked.toFixed(0) + "m";
   $("say").innerHTML = f.say.length ? f.say.map(x => `<div class="say">🔊 ${esc(x)}</div>`).join("") : `<span class="k">(없음)</span>`;
   const j = f.junction, jt = j ? ` · 갈림길 앞 ${j.m}m (트인 쪽: ${j.open.map(o => ({ahead:"앞",left:"왼쪽",right:"오른쪽"}[o])).join("·")})` +
@@ -103,6 +110,42 @@ function draw() {
   $("why").textContent = f.events.join(" / ") || "-";
   $("slider").value = i;
   document.querySelectorAll("#log div").forEach(d => d.classList.toggle("cur", +d.dataset.i === lastSay(i)));
+}
+function drawMind(e, f) {
+  const m = f.mind, b = e.mbox, S = 14, P = 30;
+  const X = x => P + (x - b[0]) * S, Y = y => P + (b[3] - y) * S, V = c => [Math.sin(c * Math.PI / 180), Math.cos(c * Math.PI / 180)];
+  const Wd = (b[2] - b[0]) * S + 2 * P, Hd = (b[3] - b[1]) * S + 2 * P;
+  let s = `<svg viewBox="0 0 ${Wd} ${Hd}" xmlns="http://www.w3.org/2000/svg">`;
+  if (!m || !m.pos) {
+    $("mind").outerHTML = (s + `<text x="${Wd/2}" y="${Hd/2}" text-anchor="middle" fill="var(--mute)" font-size="14">걸음 수·방위가 아직 없음 (위치 모름)</text></svg>`).replace("<svg", '<svg id="mind"');
+    $("mcap").textContent = ""; return;
+  }
+  const tr = e.steps.slice(0, i + 1).filter(g => g.mind && g.mind.pos).map(g => `${X(g.mind.pos[0])},${Y(g.mind.pos[1])}`).join(" ");
+  s += `<polyline points="${tr}" fill="none" stroke="var(--trail)" stroke-width="2.5" stroke-opacity=".7" stroke-linejoin="round"/>`;
+  const labeled = new Set();
+  for (const [j, c, k] of m.br) {
+    const ed = m.edges[k], a = m.junc[j], v = V(c);
+    let q = null;  // 가지 방향에 있는 다른 끝 갈림길
+    for (const o of ed.ends) if (o !== j) { const d = [m.junc[o][0] - a[0], m.junc[o][1] - a[1]], dot = d[0]*v[0] + d[1]*v[1];
+      if (dot > 0 && (!q || dot > q[1])) q = [o, dot]; }
+    const here = !q && k === m.edge;  // 지금 걷는 가지: 갈림길에서 지금 위치까지
+    const end = q ? m.junc[q[0]] : here ? m.pos : [a[0] + v[0] * 5, a[1] + v[1] * 5];
+    const col = ed.dead ? "var(--mute)" : k === m.edge ? "var(--seen)" : "var(--ink)";
+    s += `<line x1="${X(a[0])}" y1="${Y(a[1])}" x2="${X(end[0])}" y2="${Y(end[1])}" stroke="${col}" stroke-width="3" stroke-opacity=".75"${!q && !here && !ed.dead ? ' stroke-dasharray="6 5"' : ""}/>`;
+    if (!q && ed.dead) s += `<line x1="${X(end[0]) - 6*v[1]}" y1="${Y(end[1]) - 6*v[0]}" x2="${X(end[0]) + 6*v[1]}" y2="${Y(end[1]) + 6*v[0]}" stroke="${col}" stroke-width="3"/>`;
+    if (!q && !here && !ed.dead) s += `<text x="${X(end[0])}" y="${Y(end[1]) - 6}" text-anchor="middle" font-size="10" fill="var(--mute)">안 가 봄</text>`;
+    if (ed.nums && !labeled.has(k)) { labeled.add(k);
+      s += `<text x="${(X(a[0]) + X(end[0]))/2 + 6}" y="${(Y(a[1]) + Y(end[1]))/2 + 14}" font-size="10" fill="var(--mute)">${ed.nums[0]}~${ed.nums[1]}</text>`; }
+  }
+  m.junc.forEach((p, k) => { s += `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="6" fill="var(--sign)"/><text x="${X(p[0]) + 9}" y="${Y(p[1]) + 4}" font-size="10" fill="var(--sign)">${k}</text>`; });
+  if (m.spot) s += `<text x="${X(m.spot[0])}" y="${Y(m.spot[1]) + 6}" text-anchor="middle" font-size="18" fill="var(--target)">★</text>`;
+  if (m.head !== null && m.head !== undefined) {
+    const u = m.head * Math.PI / 180, tri = [[0, 11], [-7, -7], [7, -7]].map(([dx, fw]) =>
+      `${X(m.pos[0]) + fw*Math.sin(u) + dx*Math.cos(u)},${Y(m.pos[1]) - fw*Math.cos(u) + dx*Math.sin(u)}`).join(" ");
+    s += `<polygon points="${tri}" fill="var(--user)"/>`;
+  } else s += `<circle cx="${X(m.pos[0])}" cy="${Y(m.pos[1])}" r="6" fill="var(--user)"/>`;
+  $("mind").outerHTML = (s + "</svg>").replace("<svg", '<svg id="mind"');
+  $("mcap").textContent = m.dir ? `· 목적지 방향: ${m.dir}${m.p_ahead != null ? ` (앞일 확률 ${m.p_ahead})` : ""}` : "";
 }
 function lastSay(k) { const st = EPS[ep].steps; for (let j = k; j >= 0; j--) if (st[j].say.length) return j; return -1; }
 function load(k) {
@@ -126,6 +169,16 @@ document.onkeydown = e => { if (e.key === "ArrowRight") $("next").click(); if (e
 load(0);
 </script></body></html>
 """
+
+
+def mind_box(steps):
+    """머릿속 지도 그림 범위: 실행 내내 믿은 위치·갈림길·목적지 점을 모두 담음 (재생 중 화면이 흔들리지 않게)."""
+    pts = [(0.0, 0.0)]
+    for f in steps:
+        m = f.get("mind") or {}
+        pts += ([m["pos"]] if m.get("pos") else []) + list(m.get("junc", [])) + ([m["spot"]] if m.get("spot") else [])
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return (min(xs) - 6, min(ys) - 6, max(xs) + 6, max(ys) + 6)
 
 
 def pack(tr, res, case):
@@ -152,11 +205,11 @@ def pack(tr, res, case):
         prev = p
         out.append({"t": f["t"], "p": p, "body": (c["ang"] + (0 if f["h"] > 0 else 180)) % 360, "yaw": f["yaw"],
                     "say": f["say"], "act": f["act"], "seen": f["seen"], "junction": f["junction"], "events": f["events"],
-                    "walked": walked})
+                    "walked": walked, "mind": f.get("mind")})
     pad = half + 2
     return {"case": case, "kind": m["kind"], "seed": m["seed"], "target": m["target"], "mode": fl["mode"],
             "width": world.WIDTH, "range": world.RANGE, "box": (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad),
-            "cors": cors, "rooms": [], "doors": doors, "signs": signs, "steps": out, "result": res}
+            "cors": cors, "rooms": [], "doors": doors, "signs": signs, "steps": out, "result": res, "mbox": mind_box(out)}
 
 
 def pack_lobby(tr, res, case):
@@ -166,10 +219,11 @@ def pack_lobby(tr, res, case):
     doors = [{"n": d["n"], "p": d["p"], "l": (d["p"][0] + out(d) * d["n_in"][0] * 0.8, d["p"][1] + out(d) * d["n_in"][1] * 1.2),
               "a": {1: "end", -1: "start"}.get(-out(d) * d["n_in"][0], "middle")} for d in lb["doors"]]
     steps = [{"t": f["t"], "p": f["p"], "body": f["b"], "yaw": f["yaw"], "say": f["say"], "act": f["act"], "seen": f["seen"],
-              "junction": f.get("junction"), "events": f["events"], "walked": f["walked"]} for f in tr[1:]]
+              "junction": f.get("junction"), "events": f["events"], "walked": f["walked"], "mind": f.get("mind")} for f in tr[1:]]
     return {"case": case, "kind": m["kind"], "seed": m["seed"], "target": m["target"], "mode": lb["mode"],
             "width": world.WIDTH, "range": world.RANGE, "box": (-2.5, -2.5, lb["W"] + 2.5, lb["H"] + 2.5),
-            "cors": [], "rooms": [(0, 0, lb["W"], lb["H"])], "blocks": lb.get("blocks", []), "doors": doors, "signs": [], "steps": steps, "result": res}
+            "cors": [], "rooms": [(0, 0, lb["W"], lb["H"])], "blocks": lb.get("blocks", []), "doors": doors, "signs": [], "steps": steps,
+            "result": res, "mbox": mind_box(steps)}
 
 
 def main():
