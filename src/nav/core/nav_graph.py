@@ -13,12 +13,21 @@
 
 import math
 
+from arrival import TURN_DEG, WALK_MPS  # 같은 core 폴더 (걷는 속도 가정, 돈 것으로 볼 방위 변화)
+
 SIDE_SURE = 2 / 3  # 벽 표가 이 비율 이상 같아야 그래프에 넣음
 FLOW_EPS = 0.1     # 같은 벽 두 문패의 증감이 실제 흐름과 반대일 확률 (번호 건너뜀·오독)
 DIR_SURE = 0.7     # P(앞)이 이 이상이면 앞쪽, 1-이 이하면 뒤쪽, 그 사이는 모름
 VOTE_OK = 0.85     # 한 번의 벽 표(깊이)가 맞을 확률 (돌았는지 판단에 씀)
 POS_SCALE = 4      # 지금 위치에서 이 칸만큼 떨어진 문패는 무게가 반
 PASS_POS = 2       # 확정된 목적지 문패가 지금 위치보다 이 칸 넘게 뒤에 있으면 '지나침'(뒤쪽)
+END_M = 4.0        # 깊이로 앞의 가장 먼 곳이 이 안이면 막다른 곳(복도 끝)
+END_RUN = 2        # 막다른 곳이 이만큼 연속 사진에서 보여야 인정 (사람·물건이 잠깐 가린 것 제외)
+END_AXIS = 45      # 휴대폰이 걷는 방향에서 이 각도 넘게 돌아가 있으면(옆을 비춤) 막다른 곳 판단 안 함
+NEAR_POS = 5       # 목적지 추정 위치가 지금 위치에서 이 칸(걷는 속도로 약 4m) 안이면 근처
+BRACKET = 8        # 목적지 번호를 사이에 둔 같은 벽 이웃 문패의 번호 차이가 이 이하일 때만 그 사이로 위치를 추정
+EXPLORED = 0.1     # 끝까지 가 본 쪽에 목적지가 있을 가능성을 이만큼 낮춤 (문패를 놓쳤을 수 있어 0은 아님)
+ELSEWHERE = 0.1   # 끝을 본 뒤: 목적지가 이 복도가 아닌 곳(갈림길 너머 다른 복도)에 있을 가능성 (앞·뒤·다른 곳으로 나눔)
 
 
 class CorridorGraph:
@@ -32,6 +41,10 @@ class CorridorGraph:
         self.rooms = {}    # 번호 → {"best": 최고 읽기 점수, "total": 읽힌 횟수, "ok": 확정}
         self.flips = []    # 돌았다고 결론 낸 때
         self.turn_t = None # 돌라고 안내했지만 실제로 돌았는지 아직 모르는 때
+        self.ref = None    # 휴대폰 방위(도)를 받으면: 처음 걷던 방향의 방위. 있으면 돌았는지를 방위로 정함 (가설 안 씀)
+        self.sense_flips, self.sense_dir = [], 1
+        self.ends = set()  # 끝까지 가 본 쪽 (복도 기준 방향 ±1). 끝을 봤으면 거기까지 걸어온 것이라 그 사이는 다 지나옴
+        self.end_run = 0
 
     def see(self, t, room, score, side=None, dist=None):
         """문패 읽기 하나. side: 사용자 기준 '왼쪽'/'오른쪽'(모르면 None), dist: 문패까지 거리(m), score: 0~1 읽기 믿음."""
@@ -43,9 +56,45 @@ class CorridorGraph:
         """문패 확정 여부 (확정은 각 버전의 믿음 점수 규칙이 정함). 층 판단과 '보임'에만 씀."""
         self.rooms.setdefault(room, {"best": 0.0, "total": 0, "ok": False})["ok"] = ok
 
+    def sense_heading(self, t, deg):
+        """사진을 찍을 때의 휴대폰 방위(도, 나침반). 처음 방위를 기준으로, 지금 걷는 방향에서 TURN_DEG 넘게 바뀌면
+        그 사진 시각에 돈 것으로 기록한다. 안내와 상관없이 스스로 돈 것(복도 끝 등)도 잡는다 (2026-11-25 시뮬레이터 v1)."""
+        if deg is None:
+            return
+        if self.ref is None:
+            self.ref, self.turn_t = deg, None  # 방위가 오면 '돌았나' 가설 대신 방위를 씀
+            return
+        walk = self.ref + (0 if self.sense_dir > 0 else 180)
+        if abs((deg - walk + 180) % 360 - 180) > TURN_DEG:
+            self.sense_flips.append(t - 0.01)  # 이 사진은 이미 돈 뒤 (돌기 시각은 바로 앞)
+            self.sense_dir = -self.sense_dir
+            self.event(t, f"휴대폰 방위로 돈 것을 확인 ({deg:.0f}°)")
+
+    def see_depth(self, t, far_m, deg=None):
+        """깊이: 앞에서 가장 먼 곳까지 거리(m). END_M 안이 END_RUN장 연속이면 지금 걷는 쪽 끝까지 왔다고 기록.
+        휴대폰 방위가 걷는 방향에서 END_AXIS 넘게 돌아가 있으면(옆을 비춤) 세지 않는다.
+        방위가 없으면 쓰지 않는다: 어느 쪽을 보고 있는지 모르면 끝이 어느 쪽인지도 모름 (스스로 돈 것을 모르면
+        끝을 본 쪽을 계속 앞쪽으로 착각해 반대로 보냄, 시뮬레이터)."""
+        if far_m is None or self.ref is None or deg is None:
+            return
+        walk = self.ref + (0 if self.sense_dir > 0 else 180)
+        if abs((deg - walk + 180) % 360 - 180) > END_AXIS:
+            self.end_run = 0
+            return
+        self.end_run = self.end_run + 1 if far_m < END_M else 0
+        if self.end_run >= END_RUN:
+            head = self.sense_dir
+            if head not in self.ends:
+                self.ends.add(head)
+                self.event(t, f"막다른 곳 (앞 {far_m:.1f}m): 이쪽 끝까지 왔음")
+
     def turned(self, t):
         """뒤로 돌라고 안내함. 그래프는 그대로 두고 '이때 돌았다/안 돌았다' 두 가설을 연다.
-        앞서 열어 둔 가설이 있으면 지금까지의 근거로 결론 내고 닫는다."""
+        앞서 열어 둔 가설이 있으면 지금까지의 근거로 결론 내고 닫는다.
+        휴대폰 방위가 있으면 가설을 열지 않는다 (돌았는지는 sense_heading이 정함)."""
+        if self.ref is not None:
+            self.event(t, "뒤로 돌라고 안내함 (돌았는지는 휴대폰 방위로 확인)")
+            return
         if self.turn_t is not None:
             p1 = self.heading_belief()[True]
             if p1 > 0.5:
@@ -55,10 +104,10 @@ class CorridorGraph:
         self.event(t, "뒤로 돌라고 안내함: 돌았는지는 이후 문패로 판단 (그래프는 유지)")
 
     # ---- 그래프 보기
-    def _view(self, turned):
-        """사용자 방향 가설 하나(마지막 안내 때 돌았나)로 본 복도 그래프.
+    def _view(self, turned, now=None):
+        """사용자 방향 가설 하나(마지막 안내 때 돌았나)로 본 복도 그래프. now: 지금 시각(없으면 마지막으로 문패를 본 때).
         돌려줌: (문패 목록 [{room, wall A/B, sure, pos, trust, ok, agree, disagree}], 지금 방향 ±1, 지금 위치)"""
-        flips = self.flips + ([self.turn_t] if turned and self.turn_t is not None else [])
+        flips = self.flips + self.sense_flips + ([self.turn_t] if turned and self.turn_t is not None else [])
 
         fl_sorted = sorted(flips)
 
@@ -73,7 +122,7 @@ class CorridorGraph:
                 s_, prev, sign = s_ + sign * (f - prev), f, -sign
             return s_ + sign * (t - prev)
 
-        tmax = max([x[0] for x in self.log] + [0])
+        tmax = max([x[0] for x in self.log] + [0] + ([now] if now is not None else []))
         reads = {}
         for t, room, side, dist in self.log:
             reads.setdefault(room, []).append((t, side, dist))
@@ -85,7 +134,10 @@ class CorridorGraph:
             sure = bool(votes) and votes.count(top) / len(votes) >= SIDE_SURE
             near = min((x for x in rs if x[2] is not None), key=lambda x: x[2], default=rs[-1])  # 가장 가까이 지난 때
             agree = votes.count(top) if votes else 0
-            out.append({"room": room, "wall": top, "sure": sure, "pos": pos(near[0]), "ok": r["ok"],
+            # 문패는 본 자리가 아니라 본 거리만큼 앞에 있다 (3m 앞에서 본 문패를 그때 위치에 두면 지나치기 전에 '지나침'이 됨,
+            # 2026-11-25 시뮬레이터). 거리 m → 걷는 속도로 위치 칸(초)으로 바꿈
+            ahead = (near[2] or 0.0) / WALK_MPS
+            out.append({"room": room, "wall": top, "sure": sure, "pos": pos(near[0]) + heading(near[0]) * ahead, "ok": r["ok"],
                         "agree": agree, "disagree": len(votes) - agree,
                         "trust": r["best"] * (1 - 0.5 ** r["total"])})
         return out, heading(tmax + 1e-6), pos(tmax)
@@ -134,9 +186,32 @@ class CorridorGraph:
                 floors[room[0]] = floors.get(room[0], 0) + 1
         return max(floors, key=floors.get) if floors else None
 
+    @staticmethod
+    def _bracket(plates, t):
+        """같은 벽에서 위치가 이웃한 두 문패의 번호가 t를 사이에 두면, 번호 비율로 t의 위치를 추정. 없으면 None."""
+        best = None
+        for wall in ("A", "B"):
+            wl = sorted((p for p in plates if p["wall"] == wall), key=lambda p: p["pos"])
+            for a, b in zip(wl, wl[1:]):
+                na, nb = int(a["room"]), int(b["room"])
+                if na != nb and min(na, nb) < t < max(na, nb) and abs(nb - na) <= BRACKET:
+                    if best is None or abs(nb - na) < best[0]:
+                        best = (abs(nb - na), a["pos"] + (b["pos"] - a["pos"]) * (t - na) / (nb - na))
+        return best[1] if best else None
+
+    def _explored(self, pa, head):
+        """끝까지 가 본 쪽을 낮춘 (P(앞), P(뒤)). 끝을 본 뒤에는 '이 복도가 아닌 곳'도 하나의 경우로 둔다:
+        번호 흐름이 이미 끝을 본 쪽을 가리키면 앞·뒤 모두 낮아져 '모름'이 되고, 갈림길 판단(floor_graph)에 맡긴다
+        (2026-11-25 시뮬레이터 v3: 갈림길 너머 복도의 목적지를 막다른 곳 너머로 보고 끝에서 오갔음)."""
+        if not self.ends:
+            return pa, 1 - pa
+        a = pa * (EXPLORED if head in self.ends else 1)
+        b = (1 - pa) * (EXPLORED if -head in self.ends else 1)
+        return a / (a + b + ELSEWHERE), b / (a + b + ELSEWHERE)
+
     # ---- 판단
-    def direction(self, target):
-        """목적지 방향. 돌려줌: {"direction": 앞쪽/뒤쪽/근처/보임/다른 층/모름, "why", "walk": [지나온 번호…], "p_ahead", "side"}"""
+    def direction(self, target, now=None):
+        """목적지 방향. now: 지금 시각 (문패가 안 보이는 동안에도 걸은 만큼 위치를 옮김, 2026-11-25). 돌려줌: {"direction": 앞쪽/뒤쪽/근처/보임/다른 층/모름, "why", "walk": [지나온 번호…], "p_ahead", "side"}"""
         fl = self._floor()
         if fl is None:
             return {"direction": "모름", "why": "확실한 문패 없음"}
@@ -148,7 +223,7 @@ class CorridorGraph:
             if self.turn_t is not None and 0.3 < hb[True] < 0.7:  # 돌라고 한 뒤 돌았는지 아직 모름: 되풀이하지 않음
                 return {"direction": "모름", "why": f"{target}호를 지나친 뒤 돌았는지 확인 중 (P={hb[True]:.2f})",
                         "p_turned": round(hb[True], 2)}
-            plates, head, s_now = self._view(max(hb, key=hb.get))
+            plates, head, s_now = self._view(max(hb, key=hb.get), now)
             tp = next((p for p in plates if p["room"] == target), None)
             if tp is not None and (tp["pos"] - s_now) * head < -PASS_POS:
                 return {"direction": "뒤쪽", "why": f"{target}호 문패를 본 뒤 지나침", "walk": [target], "passed": True,
@@ -156,11 +231,11 @@ class CorridorGraph:
             return {"direction": "보임", "why": f"{target}호 문패 확정"}
         hb = self.heading_belief(fl)
         t = int(target)
-        p_ahead, near_votes, best = 0.0, 0.0, None
+        p_ahead, p_back, near_votes, best = 0.0, 0.0, 0.0, None
         for h, ph in hb.items():
             if ph < 1e-3:
                 continue
-            plates, head, s_now = self._view(h)
+            plates, head, s_now = self._view(h, now)
             same = self._same_floor(plates, fl)
             if not same:
                 continue
@@ -174,10 +249,19 @@ class CorridorGraph:
             w = [p["trust"] * 0.5 ** (abs(p["pos"] - s_now) / POS_SCALE) for p in wall]  # 지금 위치에 가까울수록 무게
             pa = sum(pd[d] * sum(wi * (1.0 if (t - int(p["room"])) * d * head > 0 else 0.5 if t == int(p["room"]) else 0.0)
                                  for wi, p in zip(w, wall)) / sum(w) for d in pd)
+            # 목적지 번호를 사이에 둔 같은 벽 이웃 문패 두 개가 있으면 그 사이로 목적지 위치를 추정 (405·409 → 407은 가운데).
+            # 지금 위치와 비교해 근처/앞/뒤. 전에는 '가장 가까운 문패 3개의 번호 사이'로 근처를 정해서, 목적지를 놓치고
+            # 지나친 뒤에도 이미 지나온 문패 때문에 계속 근처라고 했다 (2026-11-25 시뮬레이터 v2, 인식 놓침).
+            tpos = self._bracket(same, t)
+            if tpos is not None:
+                rel = (tpos - s_now) * head
+                if abs(rel) <= NEAR_POS:
+                    near_votes += ph
+                else:
+                    pa = 0.95 if rel > 0 else 0.05
+            pa, pb = self._explored(pa, head)
             p_ahead += ph * pa
-            nearest = sorted(wall, key=lambda p: abs(p["pos"] - s_now))[:3]
-            nums = [int(p["room"]) for p in nearest]
-            near_votes += ph * (len(nums) >= 2 and min(nums) <= t <= max(nums))
+            p_back += ph * pb
             if best is None or ph > best[0]:
                 passed = sorted((p for p in wall if (p["pos"] - s_now) * head <= 0), key=lambda p: p["pos"] * head)
                 best = (ph, [p["room"] for p in passed] or [p["room"] for p in wall], key["wall"], pd[1] if head == 1 else pd[-1])
@@ -188,9 +272,9 @@ class CorridorGraph:
         why = (f"{best[2]}벽 {' → '.join(walk)}, P(앞)={p_ahead:.2f}, 향한 쪽으로 번호 증가 P={best[3]:.2f}"
                + (f", 돌았을 확률 {hb[True]:.2f}" if self.turn_t is not None else ""))
         if near_votes >= 0.5:
-            return {"direction": "근처", "why": why + ", 목적지가 지금 근처 번호 사이", **info}
+            return {"direction": "근처", "why": why + ", 이웃 번호 사이로 추정한 목적지 위치가 가까움", **info}
         if p_ahead >= DIR_SURE:
             return {"direction": "앞쪽", "why": why, **info}
-        if p_ahead <= 1 - DIR_SURE:
+        if p_back >= DIR_SURE:
             return {"direction": "뒤쪽", "why": why, **info}
         return {"direction": "모름", "why": why + " (아직 확신 부족)", **info}
