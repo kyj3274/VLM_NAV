@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const { SpeechQueue } = require('../../src/nav/web/speech.js');
 
 // 시계·타이머·음성 엔진 가짜. engine.mode: 'ok'(바로 시작) | 'silent'(시작 안 함) | 'endNoStart'(바로 끝, 시작 없음)
-function setup(opts) {
+function setup(opts, extraEnv = {}) {
   let t = 0;
   const timers = [];
   const spoken = [];   // 실제로 시작된 문장
@@ -25,6 +25,7 @@ function setup(opts) {
     setTimeout: (f, ms) => { const h = { at: t + ms, f }; timers.push(h); return h; },
     clearTimeout: (h) => { const i = timers.indexOf(h); if (i >= 0) timers.splice(i, 1); },
     log: (k, o) => logs.push([k, o.text]),
+    ...extraEnv,
   };
   const sq = new SpeechQueue(env, opts);
   const tick = (ms) => {   // 시간을 흘리며 타이머 실행
@@ -104,4 +105,14 @@ test('같은 문장: 9초 안에는 되풀이하지 않고 9초가 지나면 다
   tick(5000); sq.say(s); finish();
   tick(5000); sq.say(s); finish();
   assert.deepStrictEqual(spoken, [s, s]);
+});
+
+test('onEnd: 문장이 끝나면 그 문장(seq)으로 알림 (옆 비추기 문장이 끝난 뒤 빠른 확인 사진, 2026-11-24 병합)', () => {
+  const ends = [];
+  const { sq, spoken, finish } = setup(undefined, { onEnd: (item) => ends.push(item.seq) });
+  sq.say('멈춰 주세요. 410호 문이 왼쪽에 있을 것 같습니다.', { seq: 7 });
+  assert.strictEqual(spoken.length, 1);
+  assert.deepStrictEqual(ends, []);
+  finish();
+  assert.deepStrictEqual(ends, [7]);
 });

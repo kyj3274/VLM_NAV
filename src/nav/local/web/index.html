@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>실내 길안내</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#15171a; --muted:#5d6570; --accent:#1f6feb; --ok:#1a7f37; --warn:#b54708; --line:#dde1e6; --pause:#9a6700; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#181b21; --text:#eef0f3; --muted:#9aa3ad; --accent:#4c8dff; --ok:#3fb950; --warn:#f0883e; --line:#2a2f37; --pause:#d29922; } }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:980px; margin:0 auto; padding:16px; display:grid; gap:12px; }
+  h1 { font-size:20px; margin:4px 0; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .step { font-size:13px; color:var(--muted); font-weight:600; min-width:64px; }
+  select { font-size:16px; padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  input[type=text] { font-size:18px; padding:8px 10px; width:110px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  button { font-size:16px; padding:9px 14px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.big { font-size:20px; padding:14px 22px; font-weight:700; }
+  button:disabled { opacity:.45; cursor:default; }
+  button:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  #state { font-size:13px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  #state[data-s=running] { color:#fff; background:var(--ok); border-color:var(--ok); }
+  #state[data-s=paused] { color:#fff; background:var(--pause); border-color:var(--pause); }
+  #state[data-s=arrived] { color:var(--ok); border-color:var(--ok); }
+  .grid { display:grid; grid-template-columns: minmax(0,320px) minmax(0,1fr); gap:12px; }
+  @media (max-width:720px) { .grid { grid-template-columns:1fr; } }
+  .vbox { position:relative; }
+  video { width:100%; max-height:62vh; background:#000; border-radius:10px; object-fit:contain; display:block; }
+  #veil { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:22px; font-weight:700; background:rgba(0,0,0,.45); border-radius:10px; }
+  #say { font-size:24px; line-height:1.45; min-height:72px; font-weight:600; }
+  .stat { display:grid; grid-template-columns:auto 1fr; gap:4px 10px; font-size:14px; color:var(--muted); }
+  .stat b { color:var(--text); font-weight:600; }
+  #log { max-height:42vh; overflow:auto; font-size:14px; }
+  #log div { padding:6px 0; border-bottom:1px solid var(--line); }
+  #log .t { color:var(--muted); margin-right:6px; font-variant-numeric:tabular-nums; }
+  #log .vlm { color:var(--warn); }
+  #btnTalk { width:100%; min-height:88px; font-size:22px; font-weight:800; border-radius:12px; border:2px solid var(--accent); background:var(--card); color:var(--accent); }
+  #btnTalk[data-m=listen] { background:var(--warn); border-color:var(--warn); color:#fff; }
+  #btnTalk[data-m=confirm] { background:var(--accent); color:#fff; }
+  .muted { color:var(--muted); font-size:13px; }
+  .arrived { color:var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <h1>실내 길안내 (시연) <span id="state" data-s="idle">대기</span></h1>
+  <button id="btnTalk" data-m="idle">말하기: 누르고 목적지를 말하세요 (예: 317호)</button>
+  <div class="card" style="display:grid; gap:10px">
+    <div class="row">
+      <span class="step">1. 설정</span>
+      <label>비밀번호 <input id="pass" type="password" style="width:120px" autocomplete="current-password"></label>
+      <label>목적지 <input id="target" type="text" value="314" inputmode="numeric"></label>호
+      <label class="row muted"><input id="speak" type="checkbox" checked> 소리로 읽기</label>
+      <label class="row muted"><input id="pick" type="checkbox" checked> 흔들림 줄이기</label>
+      <label>화질 <select id="quality"><option value="720">보통 (720)</option><option value="1080">고화질 (1080)</option></select></label>
+    </div>
+    <div class="row">
+      <span class="step">2. 화면</span>
+      <button id="btnCam">카메라 켜기</button>
+      <label class="row"><span>또는 영상 파일:</span><input id="files" type="file" accept="video/*" multiple></label>
+      <span id="src" class="muted">아직 고르지 않음</span>
+    </div>
+    <div class="row">
+      <span class="step">3. 안내</span>
+      <button id="btnGo" class="primary big" disabled>안내 시작</button>
+      <button id="btnPause" class="big" disabled>일시 정지</button>
+      <button id="btnElev" disabled>엘리베이터에서 내렸어요</button>
+      <button id="btnEnd" disabled>끝내기</button>
+    </div>
+  </div>
+  <p class="muted">카메라를 켜거나 영상을 골라도 바로 안내하지 않습니다. 화면을 맞춘 뒤 "안내 시작"을 누르세요. 일시 정지 중에는 사진을 보내지 않고, 지금까지 읽은 층·호실은 그대로 둡니다. "흔들림 줄이기"를 켜면 0.25초마다 3장(1초 12장)을 찍어 가장 선명한 장만 보냅니다. 보내는 사진 수(1초 4장)는 같습니다. 영상 파일은 순서대로 여러 개를 고르면 되고, 두 번째 파일부터는 엘리베이터에서 내린 것으로 처리합니다.</p>
+  <div class="grid">
+    <div class="card vbox"><video id="video" playsinline muted></video><div id="veil" hidden>일시 정지</div></div>
+    <div class="card" style="display:grid; gap:10px; align-content:start">
+      <div id="say">목적지를 넣고, 카메라를 켜거나 영상을 고르세요.</div>
+      <div class="stat">
+        <span>지금 층</span><b id="sFloor">-</b>
+        <span>읽은 호실</span><b id="sRooms">-</b>
+        <span>장면</span><b id="sScene">-</b>
+        <span>OCR 글자</span><b id="sOcr">-</b>
+        <span>찾은 물체</span><b id="sObj">-</b>
+        <span>장소 (Places365)</span><b id="sPlace">-</b>
+        <span>VLM 호출</span><b id="sVlm">0번</b>
+        <span>처리 시간</span><b id="sTime">-</b>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const video = $("video");
+const PER_SEC = 4;  // 1초에 보내는 사진 수 (애매하면 서버가 이 장들을 모두 봄)
+const CAND = 3;  // 흔들림 줄이기: 0.25초마다 3장(1초 12장)을 찍어 가장 선명한 장만 보냄 (영상 실험: 호실 21→26개 맞음)
+const small = document.createElement("canvas"), slots = [...Array(PER_SEC)].map(() => document.createElement("canvas"));
+const maxSide = () => $("quality").value === "1080" ? 1920 : 1280;  // 보내는 사진의 긴 변 (OCR은 이 크기 그대로 읽음)
+// state: idle(화면 없음) → ready(화면 있음) → running ⇄ paused → ready(끝내기·도착·영상 끝)
+let state = "idle", source = null, stream = null, files = [], vlmCount = 0, wake = null;
+let fileIdx = 0, fileT = 0, runId = 0;  // runId: 끝내고 다시 시작하면 이전 루프는 멈춤  // 영상 모드에서 이어서 볼 위치
+
+function setState(s, label) {
+  state = s;
+  const names = {idle: "대기", ready: "준비됨", running: "안내 중", paused: "일시 정지", arrived: "도착"};
+  $("state").dataset.s = s; $("state").textContent = label || names[s];
+  const live = s === "running" || s === "paused";
+  $("btnGo").disabled = !(s === "ready" || s === "arrived");
+  $("btnPause").disabled = !live;
+  $("btnPause").textContent = s === "paused" ? "다시 시작" : "일시 정지";
+  $("btnPause").classList.toggle("primary", s === "paused");
+  $("btnElev").disabled = !live;
+  $("btnEnd").disabled = !live;
+  $("btnCam").disabled = live; $("files").disabled = live; $("target").disabled = live; $("quality").disabled = live; $("pick").disabled = live;
+  $("veil").hidden = s !== "paused";
+  if (typeof talkIdle === "function" && $("btnTalk").dataset.m === "idle") talkIdle();
+  if (s === "running" && !wake) navigator.wakeLock?.request("screen").then(w => wake = w).catch(() => {});
+  if (s !== "running" && wake) { wake.release().catch(() => {}); wake = null; }
+}
+function keep(c) {  // 지금 화면을 보낼 크기로 c에 그려 둠 (JPEG 변환은 1초 끝에 한 번만)
+  const w = video.videoWidth, h = video.videoHeight, s = Math.min(1, maxSide() / Math.max(w, h));
+  c.width = Math.round(w * s); c.height = Math.round(h * s);
+  c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+}
+function sharpness() {  // 긴 변 360으로 줄인 흑백 사진의 라플라시안 분산 (서버 선명도와 같은 방식, 값의 크기는 다름)
+  const s = 360 / Math.max(video.videoWidth, video.videoHeight);
+  const w = small.width = Math.round(video.videoWidth * s), h = small.height = Math.round(video.videoHeight * s);
+  const ctx = small.getContext("2d", {willReadFrequently: true}); ctx.drawImage(video, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data, g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) g[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+  let sum = 0, sq = 0, n = 0;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x, v = g[i - 1] + g[i + 1] + g[i - w] + g[i + w] - 4 * g[i]; sum += v; sq += v * v; n++;
+  }
+  return sq / n - (sum / n) ** 2;
+}
+function pickInto(k, best, n, into) {  // 후보가 지금까지 중 가장 선명하면 k번째 칸에 그려 둠
+  const v = sharpness();
+  if (v > best) keep((into || slots)[k]);
+  return Math.max(v, best);
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// 휴대폰 센서 기록 (11/20 추가): 걸음 수, 몸을 돌린 각도(자이로 적분), 나침반 방향. 사진과 함께 X-Client로 보내 log.jsonl에 남김.
+// 아이폰은 화면을 누른 순간에 권한을 받아야 해서 '안내 시작'을 누를 때 요청함
+const sensor = {on: false, steps: 0, yaw: 0, heading: null, lastT: null, accF: 9.8, above: false, lastStep: 0};
+async function startSensors() {
+  if (sensor.on) return;
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+      if (await DeviceMotionEvent.requestPermission() !== "granted") { log("센서 권한이 없어 센서 없이 안내합니다", "vlm"); return; }
+    }
+    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
+      await DeviceOrientationEvent.requestPermission().catch(() => {});
+    }
+  } catch (e) { log("센서를 켤 수 없습니다: " + e.message, "vlm"); return; }
+  window.addEventListener("devicemotion", e => {
+    const now = performance.now(), dt = sensor.lastT ? (now - sensor.lastT) / 1000 : 0; sensor.lastT = now;
+    const r = e.rotationRate;  // 휴대폰을 세워 들면 몸을 돌리는 축은 휴대폰 세로축(gamma)
+    if (r && r.gamma != null && dt > 0 && dt < 0.5) sensor.yaw += r.gamma * dt;
+    const a = e.accelerationIncludingGravity;  // 걸음: 가속도 크기의 봉우리 (0.3초 안에 두 번 세지 않음)
+    if (a && a.x != null) {
+      const m = Math.hypot(a.x, a.y, a.z); sensor.accF = 0.8 * sensor.accF + 0.2 * m;
+      if (!sensor.above && sensor.accF > 11.0 && now - sensor.lastStep > 300) { sensor.steps++; sensor.lastStep = now; sensor.above = true; }
+      else if (sensor.above && sensor.accF < 10.0) sensor.above = false;
+    }
+  });
+  window.addEventListener("deviceorientation", e => {
+    sensor.heading = e.webkitCompassHeading != null ? e.webkitCompassHeading : (e.alpha != null ? (360 - e.alpha) % 360 : null);
+  });
+  sensor.on = true;
+}
+const sensorNow = () => sensor.on ? {steps: sensor.steps, yaw: Math.round(sensor.yaw), heading: sensor.heading == null ? null : Math.round(sensor.heading)} : null;
+async function api(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Pass": $("pass").value},
+                               body: JSON.stringify(body || {})});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+// 아이폰 사파리는 화면을 누른 그 순간에 한 번 말해 줘야 그 뒤(서버 응답 뒤)의 음성도 나온다. 버튼을 누를 때마다 부름
+function unlockSpeech() {
+  try {
+    if (window.speechSynthesis) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); }
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (C) { window._actx = window._actx || new C(); window._actx.resume?.(); }
+  } catch (e) {}
+}
+document.addEventListener("click", unlockSpeech, true);
+document.addEventListener("touchend", unlockSpeech, true);
+function speak(text) {
+  if (!$("speak").checked || !window.speechSynthesis) return;
+  const u = new SpeechSynthesisUtterance(text); u.lang = "ko-KR"; u.rate = 1.05;
+  speechSynthesis.speak(u);
+}
+const esc = t => String(t).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+function log(text, cls) {
+  const d = document.createElement("div");
+  d.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span>`;
+  const s = document.createElement("span"); s.textContent = text; if (cls) s.className = cls;
+  d.appendChild(s); $("log").prepend(d);
+}
+function show(r, clientSec) {
+  $("sFloor").textContent = r.floor ? r.floor + "층" + (r.wrong_floor ? " (목적지 층 아님)" : "") : "모름";
+  if (r.rooms.length) $("sRooms").textContent = r.rooms.join(", ");
+  $("sScene").textContent = r.scene || "-";
+  // 점수 0.5 미만은 흐리게: 서버도 0.5 이상만 판단에 씀
+  $("sOcr").innerHTML = (r.ocr || []).length ? r.ocr.map(([t, sc]) => `<span style="opacity:${sc >= 0.5 ? 1 : .45}">${esc(t)}<small class="muted">${sc.toFixed(2)}</small></span>`).join(" · ") : "없음";
+  const objs = (r.objects || []).filter(([, c]) => c >= 0.25);
+  $("sObj").textContent = objs.length ? objs.map(([n, c]) => `${n} ${c.toFixed(2)}`).join(", ") : "없음";
+  $("sPlace").textContent = (r.place || []).length ? r.place.map(([n, p]) => `${n} ${p.toFixed(2)}`).join(", ") : "-";
+  vlmCount += r.vlm.length; $("sVlm").textContent = vlmCount + "번";
+  const c = r.client || {};
+  $("sTime").textContent = `고르기 ${(c.pickMs / 1000 || 0).toFixed(1)}초(앞 응답을 기다리는 동안) · 사진 만들기 ${(c.encMs / 1000 || 0).toFixed(2)}초 · 보내고 받기 ${clientSec.toFixed(1)}초 (그중 서버 ${r.server_seconds}초) · ${c.sent || "?"}장 ${Math.round((c.bytes || 0) / 1024)}KB, ${(r.size || []).join("×")}` + (sensor.on ? ` · 센서: 걸음 ${sensor.steps}, 회전 ${Math.round(sensor.yaw)}°` + (sensor.heading != null ? `, 방위 ${Math.round(sensor.heading)}°` : "") : " · 센서 없음");
+  for (const v of r.vlm) log(`VLM 호출: ${(v.why || []).join(", ")}`, "vlm");
+  if (r.advice) log(`VLM 추천: ${r.advice.action || "답 없음"}` + (r.advice.veto ? ` → 규칙이 막음 (${r.advice.veto})` : ""), "vlm");
+  if (state !== "running") return;  // 응답을 기다리는 사이 일시 정지했으면 말하지 않음
+  for (const s of r.say) { $("say").textContent = s; log(s, r.arrived ? "arrived" : ""); speak(s); }
+}
+// 응답이 늦으면(대개 VLM을 부를 때, 5~17초) 말없이 기다리지 않게 한 번씩 알림
+// 보통 초도 문패를 다시 보느라 2초 넘게 걸릴 때가 있어 4초부터. 연달아 나오지 않게 20초에 한 번만
+const WAIT_SAY = [[4000, "주변 환경을 확인하고 있어요. 잠시만 기다려 주세요."], [10000, "조금만 더 기다려 주세요."]];
+const WAIT_GAP = 20000;
+let lastWait = -1e9;
+// 보낼 사진 고르기: 평소에는 가장 선명한 1장만. 서버가 지난 초에 "더 보여 줘"(more)라고 했으면 4장 모두
+let want = 1, lastRt = 0;
+function choose(bests) {
+  if (want > 1) return slots.slice(0, bests.length);
+  let k = 0;
+  for (let i = 1; i < bests.length; i++) if (bests[i] > bests[k]) k = i;
+  return [slots[k]];
+}
+const toJpeg = c => new Promise(res => c.toBlob(res, "image/jpeg", 0.85));
+async function stepWith(canvases, pickMs) {
+  const tEnc = performance.now();
+  const blobs = await Promise.all(canvases.map(toJpeg));  // 글자(base64)로 바꾸지 않고 사진 그대로 보냄
+  const encMs = performance.now() - tEnc, bytes = blobs.reduce((a, b) => a + b.size, 0);
+  const t0 = performance.now(), id = runId;
+  const timers = WAIT_SAY.map(([ms, text]) => setTimeout(() => {
+    if (state !== "running" || id !== runId) return;
+    const now = performance.now();
+    if (ms === WAIT_SAY[0][0] && now - lastWait < WAIT_GAP) return;  // 첫 알림은 20초에 한 번
+    if (speechSynthesis?.speaking) return;  // 다른 안내를 읽는 중이면 끊지 않음
+    lastWait = now;
+    $("say").textContent = text; log(text, "vlm"); speak(text);
+  }, ms));
+  try {
+    const resp = await fetch("/api/step", {method: "POST", body: new Blob(blobs), headers: {
+      "Content-Type": "application/octet-stream", "X-Pass": $("pass").value, "X-Frames": blobs.map(b => b.size).join(","),
+      "X-Client": JSON.stringify({pick_ms: Math.round(pickMs || 0), enc_ms: Math.round(encMs), bytes, prev_rt_ms: Math.round(lastRt), sensor: sensorNow()})}});
+    const r = await resp.json();
+    if (r.error) throw new Error(r.error);
+    timers.forEach(clearTimeout);
+    lastRt = performance.now() - t0;
+    want = r.more ? PER_SEC : 1;
+    r.client = {pickMs: pickMs || 0, encMs, bytes, sent: blobs.length};
+    show(r, lastRt / 1000);
+    if (r.arrived) { finish("arrived"); log("도착 — 안내를 마칩니다.", "arrived"); }
+  } finally { timers.forEach(clearTimeout); }
+}
+try { $("pass").value = sessionStorage.getItem("navPass") || ""; } catch (e) {}
+$("pass").onchange = () => { try { sessionStorage.setItem("navPass", $("pass").value); } catch (e) {} };
+
+function finish(s) {
+  speechSynthesis?.cancel();
+  if (source === "file") video.pause();
+  setState(s || "ready");
+}
+function stopCamera() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } }
+
+// 2. 화면 고르기: 미리보기만, 안내는 아직 안 함
+$("btnCam").onclick = async () => {
+  if (stream) { stopCamera(); video.srcObject = null; source = null; $("src").textContent = "카메라 끔"; $("btnCam").textContent = "카메라 켜기"; setState("idle"); return; }
+  try {
+    const hi = $("quality").value === "1080";
+    stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment", width: {ideal: hi ? 1920 : 1280}, height: {ideal: hi ? 1080 : 720}}, audio: false});
+  } catch (e) { alert("카메라를 열 수 없습니다: " + e.message + "\n(카메라는 https 또는 localhost 주소에서만 됩니다)"); return; }
+  video.removeAttribute("src"); video.srcObject = stream; await video.play();
+  source = "camera"; files = []; $("files").value = "";
+  $("src").textContent = `카메라 미리보기 중 (${video.videoWidth}×${video.videoHeight})`; $("btnCam").textContent = "카메라 끄기";
+  setState("ready");
+};
+$("quality").onchange = async () => {
+  if (stream) { stopCamera(); stream = null; $("btnCam").click(); }
+};
+$("files").onchange = async () => {
+  files = [...$("files").files];
+  if (!files.length) return;
+  stopCamera(); $("btnCam").textContent = "카메라 켜기";
+  video.srcObject = null; video.src = URL.createObjectURL(files[0]);
+  await new Promise(r => video.onloadedmetadata = r);
+  source = "file"; fileIdx = 0; fileT = 0;
+  $("src").textContent = `영상 ${files.length}개 (${files.map(f => f.name).join(" → ")})`;
+  setState("ready");
+};
+
+// 3. 안내
+$("btnGo").onclick = async () => {
+  if (source === "camera") startSensors();  // 누른 순간에 권한 요청 (아이폰)
+  vlmCount = 0; $("log").innerHTML = ""; $("sRooms").textContent = "-"; $("sVlm").textContent = "0번";
+  try {
+    const r = await api("/api/start", {target: $("target").value, quality: $("quality").value,
+                                       camera: source === "camera" ? `${video.videoWidth}x${video.videoHeight}` : "file",
+                                       pick: "best1of12"});
+    log(`세션 ${r.session} 시작 (목적지 ${r.target}호)`);
+  } catch (e) { alert(e.message); return; }
+  if (source === "file") { fileIdx = 0; fileT = 0; video.src = URL.createObjectURL(files[0]); await new Promise(r => video.onloadedmetadata = r); }
+  want = 1; lastRt = 0;
+  setState("running");
+  const id = ++runId;
+  source === "camera" ? cameraLoop(id) : fileLoop(id);
+};
+$("btnPause").onclick = () => {
+  if (state === "running") { speechSynthesis?.cancel(); setState("paused"); log("일시 정지"); record("pause"); }
+  else if (state === "paused") { setState("running"); log("다시 시작"); record("resume"); }
+};
+$("btnEnd").onclick = () => { finish("ready"); log("안내를 끝냈습니다."); record("end"); };
+const record = kind => api("/api/event", {kind}).catch(() => {});  // 실험 기록용, 실패해도 안내는 계속
+$("btnElev").onclick = async () => { try { await api("/api/segment"); log("엘리베이터에서 내림 (층·위치 다시 확인)"); } catch (e) { alert(e.message); } };
+
+async function waitWhilePaused(id) { while (state === "paused" && id === runId) await sleep(200); return state === "running" && id === runId; }
+
+// 카메라: 서버 응답을 기다리는 동안에도 계속 찍으며 가장 선명한 장을 골라 둔다 (고르기만 따로 1초 기다리지 않음).
+// 응답이 오면 그동안 고른 장을 바로 보낸다 → 걸음 간격 ≈ 왕복 시간(약 1초). 11/20 측정: 고르기 1.0초 + 왕복 0.8~1.2초 = 2초였음
+// 칸 두 벌을 번갈아 써서, 보내는 중인 사진을 다음 고르기가 덮어쓰지 않게 함
+const MIN_WIN = 500;  // 응답이 아주 빨라도 이만큼은 찍어서 고름 (약 6장)
+const slotsB = [...Array(PER_SEC)].map(() => document.createElement("canvas"));
+let win = null;
+function newWindow(prev) {
+  const set = prev && prev.set === slots ? slotsB : slots;
+  return {t0: performance.now(), set, bests: Array(PER_SEC).fill(-1)};
+}
+async function cameraLoop(id) {
+  win = newWindow(null);
+  const dt = 1000 / PER_SEC / CAND;  // 약 83ms마다 한 장 (1초 12장)
+  let sampling = true;
+  (async () => {  // 고르기: 응답을 기다리는 동안에도 돎
+    while (sampling && id === runId) {
+      if (state === "running" && video.videoWidth) {
+        const k = Math.min(PER_SEC - 1, Math.floor((performance.now() - win.t0) / (1000 / PER_SEC)));  // 4장 모드: 0.25초 구간마다 한 장
+        win.bests[k] = pickInto(k, win.bests[k], CAND, win.set);
+      }
+      await sleep(dt);
+    }
+  })();
+  try {
+    while (await waitWhilePaused(id)) {
+      if (performance.now() - win.t0 > 5000) win = newWindow(win);  // 오래 멈췄다 다시 시작하면 새로 고름
+      const need = want > 1 ? 1000 : MIN_WIN;  // 4장을 달라고 하면 1초에 고루 퍼지게
+      await sleep(Math.max(0, win.t0 + need - performance.now()));
+      if (state !== "running" || id !== runId) continue;
+      const cur = win; win = newWindow(cur);  // 고른 칸은 보내는 데 쓰고, 다음 고르기는 다른 칸에
+      const filled = cur.bests.map((v, k) => v >= 0 ? k : -1).filter(k => k >= 0);
+      if (!filled.length) continue;
+      const pick = want > 1 ? filled.map(k => cur.set[k])
+                            : [cur.set[filled.reduce((a, k) => cur.bests[k] > cur.bests[a] ? k : a, filled[0])]];
+      try { await stepWith(pick, performance.now() - cur.t0); } catch (e) { log("오류: " + e.message, "vlm"); await sleep(1000); }
+    }
+  } finally { sampling = false; }
+}
+async function fileLoop(id) {
+  while (fileIdx < files.length && id === runId) {
+    if (fileIdx > 0 && fileT === 0) {
+      video.src = URL.createObjectURL(files[fileIdx]); await new Promise(r => video.onloadedmetadata = r);
+      await api("/api/segment"); log(`영상 ${fileIdx + 1}: 엘리베이터에서 내린 뒤`);
+    }
+    for (; fileT + 0.01 < video.duration; fileT += 1) {
+      if (!(await waitWhilePaused(id))) return;
+      const bests = [], n = CAND, tp = performance.now();
+      for (let k = 0; k < PER_SEC; k++) {
+        let best = -1;
+        for (let j = 0; j < n; j++) {
+          video.currentTime = Math.min(fileT + (k * n + j) / (PER_SEC * n), video.duration - 0.05); await new Promise(r => video.onseeked = r);
+          best = pickInto(k, best, n);
+        }
+        bests.push(best);
+      }
+      try { await stepWith(choose(bests), performance.now() - tp); } catch (e) { log("오류: " + e.message, "vlm"); }
+    }
+    fileIdx += 1; fileT = 0;
+  }
+  if (state === "running" && id === runId) { log("영상 끝"); finish("ready"); }
+}
+
+// ---------------- 말로 하기 (voice.html에서 시험한 방식)
+// 안내 전: 목적지를 말함 → "317호가 맞습니까?" → "맞아요" 또는 말하기 버튼 두 번 → 카메라 켜고 안내 시작
+// 안내 중: "멈춰", "다시 시작", "엘리베이터에서 내렸어", "끝"
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let vPhase = "room", vRoom = null, vRec = null, actx = null;
+function speakThen(text) {  // 다 말하고 나서 끝남 (말하는 동안은 듣지 않으려고)
+  $("say").textContent = text; log(text);
+  return new Promise(res => {
+    if (!$("speak").checked || !window.speechSynthesis) return res();
+    let done = false; const fin = () => { if (!done) { done = true; res(); } };
+    const u = new SpeechSynthesisUtterance(text); u.lang = "ko-KR"; u.rate = 1.05; u.onend = u.onerror = fin;
+    setTimeout(fin, 2500 + text.length * 180);  // 끝 알림이 안 오는 기기 대비
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  });
+}
+function beep() {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.12);
+  } catch (e) {}
+}
+function talkLabel(m, text) { $("btnTalk").dataset.m = m; $("btnTalk").textContent = text; }
+function talkIdle() {
+  talkLabel("idle", state === "running" || state === "paused" ? "말하기: 멈춰 · 다시 시작 · 엘리베이터에서 내렸어 · 끝" : "말하기: 누르고 목적지를 말하세요 (예: 317호)");
+}
+const DIG = {영: 0, 공: 0, 빵: 0, 일: 1, 하나: 1, 이: 2, 둘: 2, 삼: 3, 셋: 3, 사: 4, 넷: 4, 오: 5, 육: 6, 륙: 6, 칠: 7, 팔: 8, 구: 9};
+function sino(word) {  // "삼백십칠" → 317, "삼일칠" → 317
+  if (/[천백십]/.test(word)) {
+    let total = 0, cur = 0;
+    for (const ch of word) {
+      if (ch in DIG) cur = DIG[ch];
+      else if (ch === "천") { total += (cur || 1) * 1000; cur = 0; }
+      else if (ch === "백") { total += (cur || 1) * 100; cur = 0; }
+      else if (ch === "십") { total += (cur || 1) * 10; cur = 0; }
+      else return null;
+    }
+    return String(total + cur);
+  }
+  let s = "";
+  for (const ch of word) { if (!(ch in DIG)) return null; s += DIG[ch]; }
+  return s || null;
+}
+function parseRoom(text) {
+  const t = text.replace(/\s+/g, " ").trim();
+  const m = t.replace(/(\d)\s+(?=\d)/g, "$1").match(/(\d{3,4})(?:\s*(?:다시|-|에|의)\s*(\d{1,2}))?/);
+  if (m) return m[2] ? `${m[1]}-${m[2]}` : m[1];
+  const runs = t.replace(/\s+/g, "").match(/[영공빵일이삼사오육륙칠팔구천백십]+/g) || [];
+  for (const r of runs.sort((a, b) => b.length - a.length)) { const v = sino(r); if (v && /^\d{3,4}$/.test(v)) return v; }
+  return null;
+}
+const clean = a => a.replace(/[.,!?~\s]/g, "").toLowerCase();
+const NO = /(아니|아뇨|틀려|틀렸|다시말|노$|no)/;
+const YES = /^(네+|내+|넵|넹|예+|에|응+|어+|웅|엉|맞|그래|그렇|좋아|오케이|ok|okay|yes|yeah|ne$|ye$)/;
+const isNo = a => NO.test(clean(a)), isYes = a => !isNo(a) && YES.test(clean(a));
+const COMMANDS = [[/멈춰|멈추|정지|잠깐/, "pause"], [/다시\s*시작|계속|재개/, "resume"], [/내렸/, "elev"], [/^끝|끝내|그만|종료/, "end"]];
+
+function listen() {
+  if (!SR) { speakThen("이 브라우저는 음성 인식을 지원하지 않습니다. 안드로이드 크롬이나 아이폰 사파리에서 열어 주세요."); return; }
+  if (vRec) { try { vRec.abort(); } catch (e) {} }
+  const rec = vRec = new SR(); rec.lang = "ko-KR"; rec.interimResults = true; rec.maxAlternatives = 5; rec.continuous = false;
+  let got = false, interim = [], errored = false;
+  talkLabel("listen", "듣는 중… 삑 소리 뒤에 말하세요");
+  rec.onaudiostart = () => beep();
+  rec.onresult = e => {
+    const r = e.results[e.results.length - 1], alts = [...r].map(a => a.transcript).filter(Boolean);
+    if (!r.isFinal) { if (alts.length) interim = alts; return; }
+    if (got) return;
+    got = true; log("들은 말: " + alts.join(" | ")); onHeard(alts);
+  };
+  rec.onerror = e => { errored = e.error !== "aborted" && e.error !== "no-speech"; if (errored) { log("음성 인식 오류: " + e.error, "vlm"); speakThen(e.error === "not-allowed" ? "마이크 권한이 필요합니다." : "음성 인식이 안 됩니다. 다시 눌러 주세요."); } };
+  rec.onend = () => {
+    if (vRec === rec) vRec = null;
+    if (got || errored) return;
+    if (interim.length) { got = true; log("들은 말 (중간): " + interim.join(" | ")); return onHeard(interim); }
+    if (vPhase === "confirm") return askConfirm("대답을 못 들었습니다. ");
+    talkIdle(); speakThen("못 들었습니다. 말하기 버튼을 누르고 다시 말해 주세요.");
+  };
+  try { rec.start(); } catch (e) { talkIdle(); log("듣기 시작 실패: " + e.message, "vlm"); }
+}
+async function askConfirm(prefix) {
+  vPhase = "confirm"; talkLabel("confirm", `${vRoom}호가 맞으면 두 번 누르거나 "맞아요"`);
+  await speakThen(`${prefix || ""}${vRoom}호가 맞습니까? 맞으면 맞아요라고 말하거나 말하기 버튼을 두 번 누르세요.`);
+  if (vPhase === "confirm") listen();
+}
+async function confirmRoom(how) {
+  if (vRec) { try { vRec.abort(); } catch (e) {} }
+  vPhase = "room"; $("target").value = vRoom; talkIdle();
+  log(`목적지 확정 (${how}): ${vRoom}호`);
+  if (!$("pass").value) return speakThen(`${vRoom}호로 정했습니다. 비밀번호를 먼저 넣어 주세요.`);
+  await speakThen(`${vRoom}호로 정했습니다.`);
+  if (!source) { try { await $("btnCam").onclick(); } catch (e) {} }  // 카메라가 꺼져 있으면 켬
+  if (state === "ready" || state === "arrived") $("btnGo").click();
+  else speakThen("카메라를 켜지 못했습니다. 카메라 켜기를 눌러 주세요.");
+}
+async function onHeard(alts) {
+  talkIdle();
+  const live = state === "running" || state === "paused";
+  if (live) {
+    for (const [re, cmd] of COMMANDS) if (alts.some(a => re.test(a))) {
+      if (cmd === "pause" && state === "running") $("btnPause").click();
+      else if (cmd === "resume" && state === "paused") $("btnPause").click();
+      else if (cmd === "elev") $("btnElev").click();
+      else if (cmd === "end") $("btnEnd").click();
+      return speakThen({pause: "일시 정지합니다.", resume: "다시 시작합니다.", elev: "엘리베이터에서 내렸습니다. 다시 확인하겠습니다.", end: "안내를 끝냅니다."}[cmd]);
+    }
+    return speakThen("안내 중에는 멈춰, 다시 시작, 엘리베이터에서 내렸어, 끝 중에서 말해 주세요.");
+  }
+  if (vPhase === "confirm") {
+    if (alts.some(isYes)) return confirmRoom("말");
+    const again = alts.map(parseRoom).find(Boolean);
+    if (again && again !== vRoom) { vRoom = again; return askConfirm(); }
+    if (alts.some(isNo)) { vPhase = "room"; vRoom = null; await speakThen("목적지를 다시 말해 주세요."); return listen(); }
+    return askConfirm("잘 못 들었습니다. ");
+  }
+  const r = alts.map(parseRoom).find(Boolean);
+  if (!r) return speakThen(`"${alts[0] || ""}"라고 들었습니다. 호실 번호를 찾지 못했습니다. 다시 눌러 말해 주세요.`);
+  vRoom = r; askConfirm();
+}
+let lastTap = 0, tapTimer = null;
+$("btnTalk").onclick = () => {  // 확인 단계에서 두 번 누르면 '맞아요'. 한 번 누르면 듣기
+  const now = performance.now();
+  if (vPhase === "confirm" && now - lastTap < 450) { clearTimeout(tapTimer); lastTap = 0; speechSynthesis?.cancel(); return confirmRoom("버튼 두 번"); }
+  lastTap = now; clearTimeout(tapTimer);
+  tapTimer = setTimeout(() => { speechSynthesis?.cancel(); listen(); }, vPhase === "confirm" ? 450 : 0);
+};
+</script>
+</body>
+</html>

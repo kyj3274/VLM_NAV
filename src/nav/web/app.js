@@ -25,6 +25,7 @@ const S = {
   //   sharpMin 320 = 지난 휴대폰 시험에서 문패 번호가 읽힌 사진 17장의 최솟값(327) 바로 아래 (같은 계산, 160px 흑백 라플라시안 분산)
   // 빠른 확인: 응답에 confirm이 오면 quickGapMs 간격으로 선명한 2장을 찍어 동시에 보냄 (한 장당 최대 quickWaitMs 기다림)
   jpegQ: 0.7, sharpMin: 320, minSendMs: 500, quickGapMs: 400, quickWaitMs: 1500, quickBusy: false, quickSpeechWaitMs: 3000, sayStartAt: -1, sayStartSeq: null,
+  sayEndAt: -1, sayEndSeq: null, quickTurnMs: 1000, quickEndWaitMs: 12000,
 };
 
 // 휴대폰 쪽 기록 (2026-11-23 시험 전 보강): 응답 받은 시각, 음성 시작·끝, 네트워크 오류를 모아 3초마다 서버로 보냄
@@ -63,6 +64,7 @@ const SQ = ('speechSynthesis' in window) ? new SpeechQueue({
   now, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h),
   log: (k, o) => clog(k, o),
   onStart: (item) => { S.sayStartAt = now(); S.sayStartSeq = item.seq; showCaption(item.text, item.err); },
+  onEnd: (item) => { S.sayEndAt = now(); S.sayEndSeq = item.seq; },
   onFail: (item) => showCaption(item.text, true),
 }) : null;
 function say(text, opts = {}) {
@@ -566,7 +568,7 @@ async function sharpShot(notBefore) {   // notBefore 뒤에 선명도 기준 이
   }
   return null;
 }
-async function quickConfirm(tReply, seq) {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
+async function quickConfirm(tReply, seq, after) {   // 빠른 확인 (2026-11-23): 0.4초 간격으로 선명한 2장을 찍어 동시에 보냄. 둘 다 선명할 때만
   if (S.quickBusy || !$('quickconf').checked) return;
   S.quickBusy = true;
   try {
@@ -576,6 +578,15 @@ async function quickConfirm(tReply, seq) {   // 빠른 확인 (2026-11-23): 0.4�
     while (S.running && !spoke() && now() - tReply < S.quickSpeechWaitMs) await sleep(30);
     clog('quick_start', { waited_ms: Math.round(now() - tReply), speech: spoke(), seq });
     if (!spoke()) { clog('quick_skip', { reason: 'speech_not_started', seq }); return; }
+    if (after === 'end') {
+      // 2026-11-24 병합: 도착 추정의 "휴대폰을 ○쪽으로 돌려 문패를 비춰 주세요"(core/arrival.py)는 문장이 끝나고
+      // 몸을 돌릴 시간(quickTurnMs)을 준 뒤 찍는다. 시작하자마자 찍으면 아직 돌리기 전 사진이 감
+      const ended = () => S.sayEndAt >= tReply && S.sayEndSeq === seq;
+      while (S.running && !ended() && now() - tReply < S.quickEndWaitMs) await sleep(50);
+      if (!ended()) { clog('quick_skip', { reason: 'speech_not_ended', seq }); return; }
+      await sleep(S.quickTurnMs);
+      clog('quick_after_end', { waited_ms: Math.round(now() - tReply), seq });
+    }
     const a = await sharpShot(now());
     const b = a ? await sharpShot(now() + S.quickGapMs) : null;
     if (a && b && S.running) { sendFrame(a, 'confirm'); sendFrame(b, 'confirm'); }
@@ -638,7 +649,7 @@ function onFrameReply(r) {
       }
       if (newer) S.lastAction = r.action;
       if (r.arrived && newer) stopAfterArrival();
-      else if (r.confirm && newer && S.running) quickConfirm(now(), r.seq);
+      else if (r.confirm && newer && S.running) quickConfirm(now(), r.seq, r.confirm_after);
       break;
     }
     case 'limit': case 'stopped':

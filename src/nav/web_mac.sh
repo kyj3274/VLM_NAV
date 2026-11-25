@@ -2,10 +2,13 @@
 # 실내 길안내 웹 켜기/끄기 (맥북에서만 실행. 학교 서버·ssh·GPU를 쓰지 않음).
 #   bash src/nav/web_mac.sh start          # 실제 Claude (크레딧 씀: 세션 60, 하루 300 한도)
 #   bash src/nav/web_mac.sh start --fake   # 가짜 응답 (크레딧 0)
+#   bash src/nav/web_mac.sh start --depth  # 깊이 모델로 문패 벽 쪽·거리 (torch·transformers 필요, 옵션은 여러 개 같이 가능)
 #   bash src/nav/web_mac.sh stop | status
+#   bash src/nav/web_mac.sh local start|stop|status|records|record   # 로컬 버전 (학교 서버 GPU, src/nav/local/web_mac.sh, 포트 8766)
 # 접속 코드: 환경변수 NAV_ACCESS_CODE, 없으면 outputs/nav_access_code 파일(없으면 새로 만듦). 화면에 한 번 보여 준다.
 # 휴대폰: start가 Cloudflare 임시 HTTPS 주소(cloudflared, 2026-11-18 사용자 승인 후 Homebrew로 설치)도 켠다.
 #   주소는 켤 때마다 바뀌고, 맥이 잠들면 끊긴다. 주소를 아는 사람도 접속 코드가 있어야 쓴다.
+if [ "$1" = "local" ]; then shift; exec bash "$(dirname "$0")/local/web_mac.sh" "$@"; fi
 cd "$(dirname "$0")/../.." || exit 1
 PORT=${PORT:-8765}
 PIDF=outputs/web_server.pid
@@ -21,7 +24,7 @@ start)
     [ -s outputs/nav_access_code ] || (LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 8 > outputs/nav_access_code)
     NAV_ACCESS_CODE=$(cat outputs/nav_access_code)
   fi
-  NAV_ACCESS_CODE="$NAV_ACCESS_CODE" nohup .venv/bin/python src/nav/web_server.py --port "$PORT" $2 > "$LOG" 2>&1 < /dev/null &
+  NAV_ACCESS_CODE="$NAV_ACCESS_CODE" nohup .venv/bin/python src/nav/web_server.py --port "$PORT" "${@:2}" > "$LOG" 2>&1 < /dev/null &
   echo $! > "$PIDF"
   for i in $(seq 1 20); do grep -q READY "$LOG" && break; sleep 0.5; done
   grep -E "READY|Error" "$LOG" | tail -1

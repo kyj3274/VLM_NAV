@@ -15,7 +15,7 @@
 
   class SpeechQueue {
     // env: { synth: {speak(u), cancel()}, makeUtterance(text) → u, now() ms, setTimeout, clearTimeout,
-    //        log(kind, obj), onStart(item), onFail(item) }
+    //        log(kind, obj), onStart(item), onEnd(item), onFail(item) }
     constructor(env, opts = {}) {
       this.env = env;
       this.gapMs = opts.gapMs ?? GAP_MS;
@@ -95,6 +95,7 @@
         if (!item.started) { this.retry(item, 'end_without_start'); return; }
         this.env.clearTimeout(this.watch);
         this.log('say_end', { text: item.text, src: item.src, seq: item.seq });
+        if (this.env.onEnd) this.env.onEnd(item);
         this.cur = null;
         this.pump();
       };

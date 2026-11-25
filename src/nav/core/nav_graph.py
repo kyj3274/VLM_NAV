@@ -1,0 +1,196 @@
+"""복도 고정 그래프와 확률 방향 판단 (인식과 무관한 공통 판단, Claude 버전과 로컬 버전이 같이 쓴다).
+
+문패 읽기 하나하나를 (시각, 번호, 사용자 기준 벽, 거리, 읽기 점수)로 넣으면,
+  - 문패를 복도 기준 벽(A = 처음 걷던 방향의 왼쪽, B = 오른쪽)과 복도 위 위치에 놓고
+  - '걷는 방향으로 번호가 증가/감소' 가설을 같은 벽 이웃 문패의 증감으로 갱신하고
+  - 사용자가 돌았는지('돌았다/안 돌았다' 가설)를 그 뒤 문패로 판단해서
+  - 목적지가 앞쪽/뒤쪽/근처인지 확률(P(앞))로 낸다.
+규칙(±1, 다수결) 대신 확률이라, 근거가 부족하면 틀리는 대신 '모름'으로 늦어진다.
+11/18~20 실험·시연: docs/20 (판단 지점 12/13, 11/20 105호 실제 U턴을 P=0.82로 알아챔).
+
+알려진 가정 (다른 건물에서 확인 필요): 방 번호는 숫자 3자리 안팎이고 첫 자리가 층, 위치는 1걸음(1초 구간) = 한 칸.
+"""
+
+import math
+
+SIDE_SURE = 2 / 3  # 벽 표가 이 비율 이상 같아야 그래프에 넣음
+FLOW_EPS = 0.1     # 같은 벽 두 문패의 증감이 실제 흐름과 반대일 확률 (번호 건너뜀·오독)
+DIR_SURE = 0.7     # P(앞)이 이 이상이면 앞쪽, 1-이 이하면 뒤쪽, 그 사이는 모름
+VOTE_OK = 0.85     # 한 번의 벽 표(깊이)가 맞을 확률 (돌았는지 판단에 씀)
+POS_SCALE = 4      # 지금 위치에서 이 칸만큼 떨어진 문패는 무게가 반
+PASS_POS = 2       # 확정된 목적지 문패가 지금 위치보다 이 칸 넘게 뒤에 있으면 '지나침'(뒤쪽)
+
+
+class CorridorGraph:
+    def __init__(self, event=None):
+        self.event = event or (lambda t, text: None)  # 사건 기록 함수 (기억의 event)
+        self.reset()
+
+    def reset(self):
+        """새 구간(엘리베이터에서 내림 등): 그래프를 새로 시작."""
+        self.log = []      # [(t, 번호, 사용자 기준 벽 '왼쪽'/'오른쪽'/None, 거리 m 또는 None)]
+        self.rooms = {}    # 번호 → {"best": 최고 읽기 점수, "total": 읽힌 횟수, "ok": 확정}
+        self.flips = []    # 돌았다고 결론 낸 때
+        self.turn_t = None # 돌라고 안내했지만 실제로 돌았는지 아직 모르는 때
+
+    def see(self, t, room, score, side=None, dist=None):
+        """문패 읽기 하나. side: 사용자 기준 '왼쪽'/'오른쪽'(모르면 None), dist: 문패까지 거리(m), score: 0~1 읽기 믿음."""
+        self.log.append((t, room, side if side in ("왼쪽", "오른쪽") else None, dist))
+        r = self.rooms.setdefault(room, {"best": 0.0, "total": 0, "ok": False})
+        r["best"], r["total"] = max(r["best"], score), r["total"] + 1
+
+    def set_ok(self, room, ok=True):
+        """문패 확정 여부 (확정은 각 버전의 믿음 점수 규칙이 정함). 층 판단과 '보임'에만 씀."""
+        self.rooms.setdefault(room, {"best": 0.0, "total": 0, "ok": False})["ok"] = ok
+
+    def turned(self, t):
+        """뒤로 돌라고 안내함. 그래프는 그대로 두고 '이때 돌았다/안 돌았다' 두 가설을 연다.
+        앞서 열어 둔 가설이 있으면 지금까지의 근거로 결론 내고 닫는다."""
+        if self.turn_t is not None:
+            p1 = self.heading_belief()[True]
+            if p1 > 0.5:
+                self.flips.append(self.turn_t)
+            self.event(t, f"{self.turn_t}초에 {'돌았던' if p1 > 0.5 else '돌지 않았던'} 것으로 봄 (P={p1:.2f})")
+        self.turn_t = t
+        self.event(t, "뒤로 돌라고 안내함: 돌았는지는 이후 문패로 판단 (그래프는 유지)")
+
+    # ---- 그래프 보기
+    def _view(self, turned):
+        """사용자 방향 가설 하나(마지막 안내 때 돌았나)로 본 복도 그래프.
+        돌려줌: (문패 목록 [{room, wall A/B, sure, pos, trust, ok, agree, disagree}], 지금 방향 ±1, 지금 위치)"""
+        flips = self.flips + ([self.turn_t] if turned and self.turn_t is not None else [])
+
+        fl_sorted = sorted(flips)
+
+        def heading(t):
+            return -1 if sum(t > f for f in fl_sorted) % 2 else 1
+
+        def pos(t):  # 시간(걸음 또는 초)마다 지금 방향으로 같은 속도로 움직인다고 봄 (걸음 수·지나감 사건이 오면 교체)
+            s_, prev, sign = 0.0, 0.0, 1
+            for f in fl_sorted:
+                if t <= f:
+                    break
+                s_, prev, sign = s_ + sign * (f - prev), f, -sign
+            return s_ + sign * (t - prev)
+
+        tmax = max([x[0] for x in self.log] + [0])
+        reads = {}
+        for t, room, side, dist in self.log:
+            reads.setdefault(room, []).append((t, side, dist))
+        out = []
+        for room, rs in reads.items():
+            r = self.rooms[room]
+            votes = ["A" if (sd == "왼쪽") == (heading(t) == 1) else "B" for t, sd, _ in rs if sd]
+            top = max(set(votes), key=votes.count) if votes else None
+            sure = bool(votes) and votes.count(top) / len(votes) >= SIDE_SURE
+            near = min((x for x in rs if x[2] is not None), key=lambda x: x[2], default=rs[-1])  # 가장 가까이 지난 때
+            agree = votes.count(top) if votes else 0
+            out.append({"room": room, "wall": top, "sure": sure, "pos": pos(near[0]), "ok": r["ok"],
+                        "agree": agree, "disagree": len(votes) - agree,
+                        "trust": r["best"] * (1 - 0.5 ** r["total"])})
+        return out, heading(tmax + 1e-6), pos(tmax)
+
+    @staticmethod
+    def _flow(plates):
+        """복도 + 방향(위치가 커지는 쪽)으로 번호가 증가/감소하는 가설의 로그 근거 {1: …, -1: …}."""
+        logw = {1: 0.0, -1: 0.0}
+        for wall in ("A", "B"):
+            wl = sorted((p for p in plates if p["wall"] == wall), key=lambda p: p["pos"])
+            for a, b in zip(wl, wl[1:]):
+                diff = int(b["room"]) - int(a["room"])
+                if not diff or a["pos"] == b["pos"]:
+                    continue
+                rel = a["trust"] * b["trust"] * (1.0 if abs(diff) <= 3 else 0.5)  # 가까운 번호 = 같은 벽 이웃일 가능성 큼
+                for d in (1, -1):  # 0.5(정보 없음) 대비: 맞는 쌍은 +, 어긋난 쌍은 −
+                    logw[d] += rel * math.log(((1 - FLOW_EPS) if (diff > 0) == (d > 0) else FLOW_EPS) / 0.5)
+        return logw
+
+    @staticmethod
+    def _same_floor(plates, fl):
+        return [p for p in plates if p["room"][0] == fl and p["room"].isdigit() and p["sure"]]
+
+    def heading_belief(self, fl=None, target=None):
+        """{False: P(안 돎), True: P(돎)}. 마지막 돌기 안내 뒤의 문패가 어느 가설에서 더 잘 맞나."""
+        if self.turn_t is None:
+            return {False: 1.0, True: 0.0}
+        fl = fl or (target[0] if target else None) or self._floor() or ""
+        ev = {}
+        for h in (False, True):
+            plates = self._view(h)[0]
+            logw = self._flow(self._same_floor(plates, fl))
+            m = max(logw.values())
+            ev[h] = m + math.log(sum(math.exp(v - m) for v in logw.values()) / 2)  # 흐름 가설에 대해 평균
+            # 같은 문패를 돌기 전후로 다시 봤을 때 벽 표가 이 가설에서 한쪽으로 모이는가
+            ev[h] += sum(p["trust"] * (p["agree"] * math.log(VOTE_OK / 0.5) + p["disagree"] * math.log((1 - VOTE_OK) / 0.5))
+                         for p in plates)
+        m = max(ev.values())
+        z = sum(math.exp(v - m) for v in ev.values())
+        return {h: math.exp(v - m) / z for h, v in ev.items()}
+
+    def _floor(self):
+        floors = {}
+        for room, r in self.rooms.items():
+            if r["ok"]:
+                floors[room[0]] = floors.get(room[0], 0) + 1
+        return max(floors, key=floors.get) if floors else None
+
+    # ---- 판단
+    def direction(self, target):
+        """목적지 방향. 돌려줌: {"direction": 앞쪽/뒤쪽/근처/보임/다른 층/모름, "why", "walk": [지나온 번호…], "p_ahead", "side"}"""
+        fl = self._floor()
+        if fl is None:
+            return {"direction": "모름", "why": "확실한 문패 없음"}
+        if fl != target[0]:
+            return {"direction": "다른 층", "why": f"확실한 문패의 첫 자리 {fl}"}
+        if self.rooms.get(target, {}).get("ok"):
+            # 목적지를 본 뒤 지나쳤나: 가장 그럴듯한 방향 가설에서 목적지 문패가 사용자 뒤로 PASS_POS 넘게 있음
+            hb = self.heading_belief(fl)
+            if self.turn_t is not None and 0.3 < hb[True] < 0.7:  # 돌라고 한 뒤 돌았는지 아직 모름: 되풀이하지 않음
+                return {"direction": "모름", "why": f"{target}호를 지나친 뒤 돌았는지 확인 중 (P={hb[True]:.2f})",
+                        "p_turned": round(hb[True], 2)}
+            plates, head, s_now = self._view(max(hb, key=hb.get))
+            tp = next((p for p in plates if p["room"] == target), None)
+            if tp is not None and (tp["pos"] - s_now) * head < -PASS_POS:
+                return {"direction": "뒤쪽", "why": f"{target}호 문패를 본 뒤 지나침", "walk": [target], "passed": True,
+                        "p_ahead": 0.0, "p_turned": round(hb[True], 2)}
+            return {"direction": "보임", "why": f"{target}호 문패 확정"}
+        hb = self.heading_belief(fl)
+        t = int(target)
+        p_ahead, near_votes, best = 0.0, 0.0, None
+        for h, ph in hb.items():
+            if ph < 1e-3:
+                continue
+            plates, head, s_now = self._view(h)
+            same = self._same_floor(plates, fl)
+            if not same:
+                continue
+            logw = self._flow(same)
+            m = max(logw.values())
+            pd = {d: math.exp(v - m) for d, v in logw.items()}
+            z = sum(pd.values())
+            pd = {d: v / z for d, v in pd.items()}
+            key = min(same, key=lambda p: abs(int(p["room"]) - t))
+            wall = [p for p in same if p["wall"] == key["wall"]]
+            w = [p["trust"] * 0.5 ** (abs(p["pos"] - s_now) / POS_SCALE) for p in wall]  # 지금 위치에 가까울수록 무게
+            pa = sum(pd[d] * sum(wi * (1.0 if (t - int(p["room"])) * d * head > 0 else 0.5 if t == int(p["room"]) else 0.0)
+                                 for wi, p in zip(w, wall)) / sum(w) for d in pd)
+            p_ahead += ph * pa
+            nearest = sorted(wall, key=lambda p: abs(p["pos"] - s_now))[:3]
+            nums = [int(p["room"]) for p in nearest]
+            near_votes += ph * (len(nums) >= 2 and min(nums) <= t <= max(nums))
+            if best is None or ph > best[0]:
+                passed = sorted((p for p in wall if (p["pos"] - s_now) * head <= 0), key=lambda p: p["pos"] * head)
+                best = (ph, [p["room"] for p in passed] or [p["room"] for p in wall], key["wall"], pd[1] if head == 1 else pd[-1])
+        if best is None:
+            return {"direction": "모름", "why": "벽 쪽이 확실한 같은 층 문패 없음"}
+        walk = best[1]
+        info = {"walk": walk, "side": best[2], "p_ahead": round(p_ahead, 2), "p_turned": round(hb[True], 2)}
+        why = (f"{best[2]}벽 {' → '.join(walk)}, P(앞)={p_ahead:.2f}, 향한 쪽으로 번호 증가 P={best[3]:.2f}"
+               + (f", 돌았을 확률 {hb[True]:.2f}" if self.turn_t is not None else ""))
+        if near_votes >= 0.5:
+            return {"direction": "근처", "why": why + ", 목적지가 지금 근처 번호 사이", **info}
+        if p_ahead >= DIR_SURE:
+            return {"direction": "앞쪽", "why": why, **info}
+        if p_ahead <= 1 - DIR_SURE:
+            return {"direction": "뒤쪽", "why": why, **info}
+        return {"direction": "모름", "why": why + " (아직 확신 부족)", **info}
