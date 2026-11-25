@@ -30,8 +30,13 @@ import cv2
 import numpy as np
 from PIL import Image
 
+import sys
+
 import claude_perceiver as cp
 import nav_memory
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))  # 공통 판단 (src/nav/core, 로컬 버전과 같은 코드)
+from arrival import TargetTracker  # noqa: E402
 from claude_client import CreditLimit, DryRunClient, GatewayClient, Ledger, ReplayClient, ROOT
 
 DENSE = 8
@@ -39,8 +44,8 @@ QUIET_SAY = 10    # 이 초 동안 새 안내가 없으면 한 번 말함
 LOCATE_SEC = 5    # 경로 시작: 이 시간 동안 위치(층·장소)를 먼저 파악
 LOCATE_ASKS = 2   # 층을 모르면 "주변을 더 보여 주세요"를 몇 번까지
 EXIT_IGNORE = 4   # 엘리베이터에서 내린 뒤 이 초 동안은 (뒤에 있는) 엘리베이터를 무시
-TREND_M = 10.0    # 진행 방향 판단에 쓰는 문패 거리(m) 상한 (Claude 거리는 대략값이라 넉넉히)
-NEIGHBOR = 3      # 진행 방향은 목적지 번호 ±3 안의 문패로만 판단 (목적지 근처 번호는 차례대로 붙어 있다고 봄)
+TURN_REPEAT = 8   # '뒤로 돌아 주세요'를 다시 말하기 전 최소 간격(초). 돌 시간을 주고, 그사이 문패로 돌았는지 판단
+# 진행 방향은 공통 판단 core/nav_graph.py (확률). 전의 TREND_M(10m)·NEIGHBOR(±3) 규칙은 이 건물 번호 간격에 맞춘 것이라 뺐다 (2026-11-24)
                   # 2026-11-17 3층: 문패 순서가 317,316,309,315,307,313,314라 먼 번호(309→307 등)의 증감은 방향과 무관.
                   # 처음 규칙(5m 이내 가장 가까운 문패, 같은 벽 2개)은 315→307을 '멀어짐'으로 틀렸음
 ARRIVE_M = 2.0    # 도착: 정면(가운데) 이 거리 이내가 2초 연속
@@ -91,8 +96,9 @@ def blur(img):
 class Runner:
     """1초 구간 관찰: 가장 선명한 장을 골라 Claude 인식 1번. (VLM_NAV Runner.observe 대신)"""
 
-    def __init__(self, perceiver, per_call=1, two_segs=None):
-        self.p, self.per_call = perceiver, per_call
+    def __init__(self, perceiver, per_call=1, two_segs=None, depth_model=None):
+        """depth_model: core/depth.py의 깊이 모델(있으면 문패마다 벽 쪽·거리를 깊이로 잼, 없으면 Claude 값)."""
+        self.p, self.per_call, self.depth = perceiver, per_call, depth_model
         self.two_segs = two_segs  # 2장 방식을 쓸 구간 이름 앞부분들 (None이면 모든 구간)
 
     @staticmethod
@@ -113,7 +119,24 @@ class Runner:
         keys = self.pick(frames)
         pick = time.perf_counter() - tb
         r = self.p.see(keys if len(keys) > 1 else keys[0])
-        return {"key": keys[-1], "keys": keys, "pick_seconds": round(pick, 3), **r}
+        out = {"key": keys[-1], "keys": keys, "pick_seconds": round(pick, 3), **r}
+        if self.depth is not None and r.get("obs"):
+            out["depth_seconds"] = self.add_depth(keys[-1], r["obs"])
+        return out
+
+    def add_depth(self, frame, obs):
+        """대표 사진의 깊이로 문패마다 벽 쪽(복도 방향 기준 '왼쪽'/'오른쪽'/'?')과 거리(m)를 붙임 (core/depth.py).
+        Claude의 L/C/R은 화면 위치, 거리는 눈대중이라 깊이 값을 우선 쓴다. 돌려줌: 걸린 초."""
+        import depth
+        tb = time.perf_counter()
+        info, dep = depth.measure(self.depth, Image.open(frame).convert("RGB"))
+        obs["depth"] = info
+        for p in obs["plates"]:
+            if p.get("box"):
+                b = [v / 100 for v in p["box"]]
+                p["wall"] = depth.wall_side(info, (b[0] + b[2]) / 2)
+                p["dm"] = depth.box_distance(dep, b)
+        return round(time.perf_counter() - tb, 3)
 
     def recheck(self, frame, plate):
         return self.p.recheck(frame, plate)
@@ -134,10 +157,12 @@ class Navigator:
                    "floor_move": None, "quick": None, "quick_n": 0,
                    "el_cand": None, "el_last": None, "el_miss": 0, "el_passed": False, "stair": new_stair(),
                    "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None,
-                   "door_out": False}
+                   "door_out": False, "dir_said": None, "dir_rooms": [], "turn_said_t": -99, "dir_last": None}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
+        self.arrival = TargetTracker(target, lambda text: self.mem.event(self.clock, text))  # 도착 추정 (core/arrival.py)
+        self.sensor = None  # 웹이 걸음마다 넣는 휴대폰 센서 {"steps", "heading"} (없으면 시간으로 걸은 거리 추정)
         self.mem.event(0, f"안내 시작 (목적지 {target})")
         if start_floor:
             self.st.update(floor=str(start_floor), floor_src="말", wrong_floor=bool(self.tf) and str(start_floor) != self.tf)
@@ -160,14 +185,16 @@ class Navigator:
         self.mem.target = target
         st.update(arrived=False, arr_run=0, target_seen=None, near_d=[], trend_said=None, maybe_said=False,
                   elevator_said=False, el_approach=False, el_ready=None, quick=None, quick_n=0,
-                  el_cand=None, el_passed=False)
+                  el_cand=None, el_passed=False, dir_said=None, dir_rooms=[], turn_said_t=-99)
+        self.arrival = TargetTracker(target, lambda text: self.mem.event(self.clock, text))
         # PR #1 리뷰 3: 이전 목적지로 가던 중 한 번의 호출로 확정된 문패가 새 목적지이면 확정을 풀고
         # '서로 다른 호출 2번' 기준으로 다시 검사한다 (FORGET초 넘게 안 보였으면 호출 수는 0으로 봄).
         p = self.mem.get(target)
         if p and p["ok"]:
             calls = p["calls"] if self.clock - p["last"] <= nav_memory.FORGET else 0
             if calls < nav_memory.TARGET_CALLS:
-                p.update(ok=False, ok_t=None, wait_calls=True)
+                p.update(wait_calls=True)
+                self.mem.set_ok(target, False)
                 self.mem.event(self.clock, f"{target}호 확정 풀림 (새 목적지: 서로 다른 호출 {nav_memory.TARGET_CALLS}번 필요, 지금 {calls}번)")
         self.mem.event(self.clock, f"목적지 변경: {target}")
         # PR #1 리뷰 4: 층을 모를 때도 행동을 다시 계산한다 (전에는 층을 알 때만 → '엘리베이터 타기'가 남았음)
@@ -222,7 +249,9 @@ class Navigator:
                            door_phase=False, door_gone=0, arrow_last=None, el_approach=False, maybe_said=False,
                            floor_move=None, quick=None, quick_n=0, el_cand=None, el_last=None, el_miss=0,
                            el_passed=False, stair=new_stair(), floor_temp=bool(carry),
-                           floor_src="엘리베이터 표시창" if carry else None, ask_t=None, check_t=None, el_disp=None)
+                           floor_src="엘리베이터 표시창" if carry else None, ask_t=None, check_t=None, el_disp=None,
+                           dir_said=None, dir_rooms=[], turn_said_t=-99, dir_last=None)
+            self.arrival.reset()
             if carry:
                 self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
 
@@ -383,7 +412,7 @@ class Navigator:
         # ---- 문패 확정 (믿음 점수)
         rooms, src = [], {}
         for p in plates:
-            rec = self.mem.see(clock, p["n"], p["side"], p["m"], p["on"], rflag.get(p["n"]))
+            rec = self.mem.see(clock, p["n"], p["side"], p["m"], p["on"], rflag.get(p["n"]), wall=p.get("wall"), dist=p.get("dm"))
             if rec["ok"] and rflag.get(p["n"]) is not False:
                 rooms.append(p["n"])
                 src[p["n"]] = p
@@ -392,7 +421,9 @@ class Navigator:
             tp = next((p for p in plates if p["n"] == target), None)
             rec = self.mem.get(target)
             if tp and rec and not rec["ok"] and rec["calls"] >= nav_memory.TARGET_CALLS:
-                rec.update(ok=True, ok_t=clock, wait_calls=False)
+                rec.update(wait_calls=False)
+                self.mem.set_ok(target, True)
+                rec["ok_t"] = clock
                 self.mem.event(clock, f"{target}호 문패 확정 (빠른 확인, 서로 다른 사진 {rec['calls']}장)")
                 rooms.append(target)
                 src[target] = tp
@@ -626,29 +657,9 @@ class Navigator:
                 st["act"] = "직진"
                 self.mem.event(clock, "계단에서 나옴 (층 표시 없음)")
 
-        # ---- 진행 방향: 확정한 가까운(TREND_M 이내) 문패 번호가 목적지 번호에 가까워지는가
-        if ROOM.match(target) and not st["wrong_floor"] and st["floor"] == tf:
-            # 목적지 문패 자신도 위치 표시(거리 0)로 넣는다: 목적지를 지나친 뒤 옆 번호가 보이면 '멀어짐'
-            # (2026-11-17 410 경로: 410을 본 뒤 407→412에서 '방향이 맞습니다'라고 한 것을 고침)
-            near = [x for x in floor_rooms if x in src and src[x]["m"] is not None and src[x]["m"] <= TREND_M
-                    and abs(int(x) - int(target)) <= NEIGHBOR]
-            if near and (not st["near_d"] or st["near_d"][-1][0] != near[0]):
-                n0 = near[0]
-                d, side = abs(int(n0) - int(target)), src[n0]["side"]
-                prev = st["near_d"][-1] if st["near_d"] else None
-                st["near_d"].append((n0, d, side, clock))
-                if n0 == target or prev is None:
-                    pass  # 목적지 자신은 목적지 안내가 따로 말함
-                elif d < prev[1] and st["target_seen"] and st["trend_said"] == "away":
-                    note["trend"] = f"{prev[0]}→{n0} 가까워짐이지만 목적지를 이미 지나쳐 말하지 않음"
-                elif d < prev[1]:
-                    say.append(f"{n0}호를 지나고 있습니다. 목적지 방향이 맞습니다. 계속 직진하세요.")
-                    st["trend_said"], st["act"] = "toward", "직진"
-                    note["trend"] = f"{prev[0]}→{n0} 가까워짐"
-                elif d > prev[1] and st["trend_said"] != "away":
-                    say.append(f"{n0}호입니다. 목적지와 멀어지고 있습니다. 뒤로 돌아가세요.")
-                    st["trend_said"], st["act"] = "away", "뒤로 돌기"
-                    note["trend"] = f"{prev[0]}→{n0} 멀어짐"
+        # ---- 진행 방향: 공통 판단 core/nav_graph.py (복도 고정 그래프 + 확률, 뒤돌기 추정). 목적지를 본 뒤 지나친 것도 여기서
+        if ROOM.match(target) and not st["wrong_floor"] and st["floor"] == tf and not st["arrived"]:
+            say.extend(self.direction_say(target, note))
 
         # ---- 목적지
         # 목적지 안전장치 (2026-11-18 사용자 지시): 목적지 번호·이름은 서로 다른 호출 2번에서 읽혀야 확정.
@@ -664,7 +675,8 @@ class Navigator:
                 maybe = bool(tr and tr["last"] == clock and not tr["ok"] and rflag.get(target) is not False
                              and (st["floor"] in (None, tf)))
                 if maybe:
-                    pend_m = tr["reads"][-1]["m"]
+                    tp = next((p for p in plates if p["n"] == target), {})
+                    pend_m = tp.get("dm") or tr["reads"][-1]["m"]
         elif not ROOM.match(target) and obs.get("dest", {}).get("seen"):
             st["dest_calls"] = st.get("dest_calls", 0) + 1 if clock - st.get("dest_last", -99) <= nav_memory.FORGET else 1
             st["dest_last"] = clock
@@ -684,8 +696,9 @@ class Navigator:
                 st["maybe_said"] = True
                 st["act"] = "목적지 접근"
         if tgt:
-            side, m = tgt["side"], tgt["m"]
-            close = m is not None and m <= ARRIVE_M  # 정면이 아니어도 (사진 속 L/C/R은 모두 9~3시 안)
+            side, m = tgt["side"], tgt.get("dm") or tgt["m"]  # 깊이로 잰 거리가 있으면 그것 (Claude 거리는 눈대중)
+            self.arrival.seen(clock, m, cp.SIDE_KO.get(side, "앞"), (self.sensor or {}).get("steps"))
+            close = m is not None and m <= self.arrival.arrive_m()  # 정면이 아니어도. 옆을 비춰 확인 중이면 조금 넉넉히
             st["arr_run"] = st["arr_run"] + 1 if close else 0
             first = st["target_seen"] is None
             prev = st["target_seen"] or {}
@@ -708,6 +721,16 @@ class Navigator:
                 st["act"] = "목적지 접근"
         elif not maybe:
             st["arr_run"] = 0
+            # 목적지 문패가 안 보임: 본 거리에서 걸은 만큼 빼서 남은 거리 추정 → 가까우면 멈추고 옆을 비추게 함 (core/arrival.py)
+            if ROOM.match(target) and not st["wrong_floor"] and st["floor"] == tf and not st["arrived"] and not quick:
+                ask = self.arrival.unseen(clock, (self.sensor or {}).get("steps"))
+                if ask:
+                    say.extend(ask)
+                    st["act"] = "목적지 접근"
+                    if self.arrival.ask_t == clock and st["quick"] is None and st["quick_n"] < self.quick_max:
+                        note["confirm_now"] = True  # 옆을 비추는 순간 빠른 확인 사진 (웹 /confirm)
+                        st["quick"] = {"t": clock, "got": 0, "hit": False, "other": 0}
+                        st["quick_n"] += 1
         # 빠른 확인 (2026-11-23 사용자 지시 B3~B5): 목적지 후보를 5m 안에서 읽으면 휴대폰이 곧바로 0.4초 간격으로
         # 사진 2장을 찍어 동시에 보낸다(웹 /confirm). 2장은 각각 다른 호출(다른 사진)로 친다. 하나라도 목적지를 읽으면
         # 서로 다른 사진 2장 기준으로 확정, 2m 안이면 도착. 둘 다 다른 번호를 읽으면 후보 취소. 목적지 하나에 최대 2번.
@@ -774,6 +797,43 @@ class Navigator:
             self.mem.event(self.clock, f"빠른 확인 2장 모두 다른 번호: {target}호 후보 취소")
             say.append("목적지가 아닙니다. 계속 찾겠습니다.")
 
+    def direction_say(self, target, note):
+        """복도 그래프의 방향 판단을 안내 문장으로. 판단이 바뀌거나 새 문패가 근거에 들어올 때만 말한다.
+        '뒤로 돌아 주세요'는 TURN_REPEAT초 간격 (돌 시간을 주고, 그사이 문패로 돌았는지 판단)."""
+        st, clock = self.st, self.clock
+        d = self.mem.graph.direction(target)
+        st["dir_last"] = {k: d.get(k) for k in ("direction", "p_ahead", "p_turned")}
+        note["direction"] = d.get("why")
+        kind, walk = d["direction"], d.get("walk", [])
+        if kind not in ("앞쪽", "뒤쪽", "근처"):
+            return []
+        new_room = walk[-1] if walk and walk[-1] not in st["dir_rooms"] else None
+        if kind == st["dir_said"] and not new_room:
+            return []
+        if kind == "뒤쪽" and clock - st["turn_said_t"] < TURN_REPEAT:
+            return []
+        st["dir_rooms"] = list(walk)
+        out = []
+        if kind == "앞쪽":
+            out.append((f"{new_room}호를 지났습니다. " if new_room else "") + f"{target}호는 앞쪽입니다. 계속 직진하세요.")
+            st["act"], st["trend_said"] = "직진", "toward"
+        elif kind == "뒤쪽":
+            out.append(f"{target}호를 지나친 것 같습니다. 뒤로 돌아 주세요." if d.get("passed")
+                       else f"{target}호는 뒤쪽인 것 같습니다. 뒤로 돌아 주세요.")
+            st["act"], st["trend_said"] = "뒤로 돌기", "away"
+            self.mem.graph.turned(clock)
+            self.arrival.cancel()
+            st.update(dir_said="돌기", turn_said_t=clock)
+        elif kind == "근처" and st["dir_said"] != "근처":
+            out.append(f"{target}호 근처입니다. 문패를 확인하며 천천히 가세요.")
+            st["act"] = "목적지 접근"
+            self.arrival.near(clock)
+        if out:
+            self.mem.event(clock, f"방향 판단: {kind} ({d['why']})")
+            if kind != "뒤쪽":
+                st["dir_said"] = kind
+        return out
+
     def situation(self, obs):
         """무안내 10초 때 말할 지금 상황 한 문장 (규칙 문장, 숫자는 상태에서)."""
         st, target, tf = self.st, self.target, self.tf
@@ -781,7 +841,7 @@ class Navigator:
         place = cp.PLACE_KO.get(obs.get("place")) if obs.get("place") not in ("unknown", "stairs", None) else None
         seeking = st["wrong_floor"] and floor is not None
         if act == "뒤로 돌기":
-            return "목적지와 멀어지고 있습니다. 뒤로 돌아가세요."
+            return f"{target}호는 뒤쪽인 것 같습니다. 뒤로 돌아 주세요."
         if act == "엘리베이터로 돌아가기":
             return f"{target}호는 {tf}층에 있습니다. 엘리베이터로 돌아가 {tf}층을 누르세요."
         if act == "계단에서 나가기":
@@ -880,6 +940,7 @@ def main():
     ap.add_argument("--max-steps", type=int, default=None, help="구간마다 앞에서부터 이 초만")
     ap.add_argument("--credit-limit", type=float, default=60.0, help="이번 실행 크레딧 한도")
     ap.add_argument("--timeout", type=float, default=15.0)
+    ap.add_argument("--depth", action="store_true", help="깊이 모델로 문패 벽 쪽·거리 재기 (core/depth.py, torch·transformers 필요)")
     a = ap.parse_args()
     if a.dry_run:
         client = DryRunClient(a.model)
@@ -888,9 +949,14 @@ def main():
     else:
         client = GatewayClient(a.model, timeout=a.timeout, ledger=Ledger(a.credit_limit))
     before = None if a.dry_run or a.replay else client.credits_used()
+    depth_model = None
+    if a.depth:
+        import depth
+        depth_model = depth.load()
+        print("깊이 모델: " + ("켬" if depth_model is not None else "불러오지 못해 끔"), flush=True)
     runner = Runner(cp.Perceiver(client, send_side=a.send_side, cache_path=None if a.dry_run else a.cache,
                                  version=a.prompt_version, quality=a.send_quality), per_call=a.per_call,
-                    two_segs=a.two_segs.split(",") if a.two_segs else None)
+                    two_segs=a.two_segs.split(",") if a.two_segs else None, depth_model=depth_model)
     try:
         for spec in a.route:
             target, seqs = spec.split("=")

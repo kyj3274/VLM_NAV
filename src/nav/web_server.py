@@ -56,6 +56,7 @@ class Settings:
     fake: bool = False
     fake_delay: float = 1.2
     access_code: str = ""
+    depth: bool = False                # 깊이 모델로 문패 벽 쪽·거리 재기 (core/depth.py, Mac MPS 장당 약 0.13초, --depth)
     quick_confirm: bool = True         # 빠른 확인(/confirm, 사진 2장). 2026-11-23 사용자 지시 B5로 기본 켬 (--no-quick-confirm로 끔)
 
 
@@ -174,6 +175,12 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     code = cfg.access_code or os.environ.get("NAV_ACCESS_CODE", "")
     if not code:
         raise RuntimeError("접속 코드가 없습니다. 환경변수 NAV_ACCESS_CODE를 정해 주세요.")
+    depth_model = None
+    if cfg.depth:  # 깊이 모델은 세션마다가 아니라 한 번만 불러 같이 씀
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "core"))
+        import depth
+        depth_model = depth.load()
+        print("깊이 모델: " + ("켬" if depth_model is not None else "불러오지 못해 끔 (Claude 거리·화면 위치로 판단)"), flush=True)
     if client_factory is None:
         if cfg.fake:
             from fake_scene import fake_client
@@ -223,7 +230,8 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         d = cfg.sessions_dir / sid
         (d / "frames").mkdir(parents=True, exist_ok=True)
         client = client_factory(dest["target"], cfg.credit_per_session)
-        nav = Navigator(Runner(cp.Perceiver(client, quality=cfg.send_quality)), dest["target"], start_floor=dest.get("here"))
+        nav = Navigator(Runner(cp.Perceiver(client, quality=cfg.send_quality), depth_model=depth_model), dest["target"],
+                        start_floor=dest.get("here"))
         nav.announce = False   # "410호로 안내하겠습니다"를 이미 말함
         nav.quick_max = nav.quick_max if cfg.quick_confirm and body.quick_confirm else 0
         nav.new_segment("live_0")
@@ -389,6 +397,8 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 return stop(ws, str(e))
             see_s = time.monotonic() - t0
             o = {"key": str(path), "keys": [str(path)], "pick_seconds": 0.0, **r}
+            if ws.nav.runner.depth is not None and r.get("obs") and not quick:  # 깊이: 문패 벽 쪽·거리 (상태 잠금 밖)
+                o["depth_seconds"] = ws.nav.runner.add_depth(str(path), r["obs"])
             # 확대 재확인은 상태 잠금 밖에서 (2026-11-19 사용자 지시 1). 고르는 것만 잠금 안에서 짧게, 부르는 것은 밖에서.
             # 앞 사진의 결과가 아직 안 들어간 상태로 고르므로, 그 사이 확정된 번호를 한 번 더 볼 수는 있다(호출 1번 더, 판단은 같음).
             rechecked, rc_s = None, 0.0
@@ -418,6 +428,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                             "quick": quick})
                     return {"status": "stale", "seq": seq, "say": []}
                 t_cap = max(t_cap, float(ws.nav.clock) + 0.01) if ws.nav.records else t_cap
+                ws.nav.sensor = {"steps": steps, "heading": heading}  # 휴대폰 걸음 수: 목적지까지 걸은 거리 추정 (core/arrival.py)
                 try:
                     rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked)
                 except CreditLimit as e:  # 확대 재확인에서 한도
@@ -556,10 +567,11 @@ def main():
     ap.add_argument("--send-quality", type=int, default=70, help="Claude에 보내는 JPEG 품질")
     ap.add_argument("--no-quick-confirm", action="store_true", help="빠른 확인 끄기 (기본 켬)")
     ap.add_argument("--save-dir", default=str(ROOT / "outputs" / "web_sessions"))
+    ap.add_argument("--depth", action="store_true", help="깊이 모델로 문패 벽 쪽·거리 재기 (torch·transformers 필요)")
     a = ap.parse_args()
     cfg = Settings(sessions_dir=Path(a.save_dir), max_inflight=a.max_inflight, credit_per_session=a.credit_session,
                    credit_per_day=a.credit_day, model=a.model, fake=a.fake, fake_delay=a.fake_delay,
-                   quick_confirm=not a.no_quick_confirm, send_quality=a.send_quality)
+                   quick_confirm=not a.no_quick_confirm, send_quality=a.send_quality, depth=a.depth)
     app = create_app(cfg)
     print(f"READY http://{a.host}:{a.port}  ({'가짜 응답' if a.fake else a.model}, 세션 {a.credit_session:g} / "
           f"하루 {a.credit_day:g} 크레딧, 동시 {a.max_inflight}, 빠른 확인 {'끔' if a.no_quick_confirm else '켬'})", flush=True)
