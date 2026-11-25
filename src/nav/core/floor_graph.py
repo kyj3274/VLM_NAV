@@ -24,6 +24,8 @@ GAP = 10.0         # 본 번호와 목적지 번호 차이가 이만큼이면 �
 FLOW = 3.0         # 지금 복도 번호 흐름이 그 쪽을 가리킬 때
 EXPLORED = 0.05    # 끝까지 가 봤는데 목적지를 못 본 가지
 DIST = 20.0        # 거리 무게: 이만큼 멀면 가능성을 반으로 봄
+SAME_NUMS = 2      # 지금 가지와 다른 가지가 가까이서 본 확정 번호를 이만큼 같이 가지면 같은 복도 (문패로 고리 닫기)
+SAME_NEAR_M = 3.0  # 이 거리 안에서 본 문패만 고리 닫기에 씀 (멀리서 본 것은 갈림길 건너편 복도일 수 있음)
 
 
 def _c4(deg):
@@ -67,7 +69,7 @@ class FloorGraph:
         self.axis = None            # 마지막으로 걸은 방위 (90° 단위)
 
     def _new_edge(self):
-        self.edges.append({"nums": set(), "dead": False, "ends": set()})
+        self.edges.append({"nums": set(), "near": set(), "dead": False, "ends": set()})
         return len(self.edges) - 1
 
     # ------------------------------------------------------------ 관찰
@@ -99,6 +101,19 @@ class FloorGraph:
             self.corridor_turn = self.came is not None and (c - self.came) % 180 != 0
             if self.corridor_turn:
                 self.event(f"갈림길에서 다른 복도로 들어섬 (방위 {c}°)")
+        elif near is None and self.at is None and self.axis is not None and (_c4(heading) - self.axis) % 180 != 0 \
+                and self._nearest(self.pos, JUNC_MATCH) is not None:
+            # 아는 갈림길 근처에서 꺾음: 그 갈림길에서 꺾은 것. 갈림길 위치는 '앞 몇 m' 눈대중이라 들어섬(AT_M)을 놓칠 수 있다.
+            # 놓치면 ㅁ자 층을 한 바퀴 돌아와도 고리가 닫히지 않아 마지막 변이 계속 '안 가 본 곳'으로 남음
+            # (2026-11-26 시뮬레이터 스트레스 '없는 목적지', 1.8m 어긋나 600초 헤맴)
+            j, c = self._nearest(self.pos, JUNC_MATCH), _c4(heading)
+            self._link(j, (self.axis + 180) % 360, self.edge)
+            e = self.branch.get((j, c))
+            if e is None:
+                e = self._new_edge()
+                self._link(j, c, e)
+            self.edge, self.corridor_turn = e, True
+            self.event(f"아는 갈림길 근처에서 다른 복도로 들어섬 (방위 {c}°)")
         elif near is None and self.at is None and self.axis is not None and (_c4(heading) - self.axis) % 180 != 0:
             # 갈림길이 아닌 곳에서 다른 축으로 걸음 (꺾인 복도, 로비 벽을 따라 돎): 번호가 이어지는 직선이 바뀜.
             # 앞 직선의 '끝까지 가 봄'은 이 직선과 상관없으므로 새 가지로 (시뮬레이터 로비)
@@ -106,16 +121,20 @@ class FloorGraph:
             self.event(f"갈림길 아닌 곳에서 다른 축으로 걸음 (방위 {_c4(heading)}°)")
         self.axis = _c4(heading)
 
+    def _merge(self, old, e):
+        """가지 old를 e로 합침 (같은 복도를 다른 쪽에서 만남)."""
+        a, b = self.edges[old], self.edges[e]
+        b["nums"] |= a["nums"]
+        b["near"] |= a["near"]
+        b["ends"] |= a["ends"]
+        b["dead"] = b["dead"] or a["dead"]
+        for k, v in list(self.branch.items()):
+            if v == old:
+                self.branch[k] = e
+
     def _link(self, j, c, e):
         if (j, c) in self.branch and self.branch[(j, c)] != e:  # 한 바퀴 돌아 같은 가지를 다른 쪽에서 만남: 합침
-            old = self.edges[self.branch[(j, c)]]
-            new = self.edges[e]
-            new["nums"] |= old["nums"]
-            new["ends"] |= old["ends"]
-            new["dead"] = new["dead"] or old["dead"]
-            for k, v in list(self.branch.items()):
-                if v == self.branch[(j, c)]:
-                    self.branch[k] = e
+            self._merge(self.branch[(j, c)], e)
         self.branch[(j, c)] = e
         self.edges[e]["ends"].add(j)
         self.junctions[j]["open"].add(c)
@@ -169,6 +188,15 @@ class FloorGraph:
                     self._link(i, h, e)
                 break
         self.edges[e]["nums"].add(int(n))
+        if e == self.edge and self.at is None and m is not None and m <= SAME_NEAR_M:  # 갈림길 안에서 본 것은 어느 가지인지 모름  # 문패로 고리 닫기: 지금 가지의 번호가 다른 가지와 SAME_NUMS개 넘게 같으면 같은 복도를 다시 걷는 중
+            # (갈림길을 모를 때 출발한 복도를 나중에 반대쪽 갈림길에서 들어옴. 위치 추정과 상관없이 문패로 앎, 2026-11-26 ㅁ자 층)
+            near = self.edges[e]["near"]
+            near.add(int(n))
+            old = next((k for k, o in enumerate(self.edges) if k != e and k in self.branch.values()  # 합쳐져 사라진 가지 제외
+                        and len(o["near"] & near) >= SAME_NUMS), None)
+            if old is not None:
+                self.event(f"가까이 본 문패로 이미 걸은 복도임을 앎 ({', '.join(map(str, sorted(near & self.edges[old]['near'])[:3]))})")
+                self._merge(old, e)
 
     def dead_end(self):
         """지금 가지의 끝까지 왔음 (깊이로 앞이 막힘, nav_graph와 같은 판단)."""

@@ -70,3 +70,30 @@ def test_start_inside_junction_then_turn_is_corridor_turn():
         g.move(k, 90)
         turned = turned or g.corridor_turn
     assert turned
+
+
+def test_turn_near_known_junction_closes_loop():
+    """아는 갈림길에서 2m 못 미쳐(AT_M 1.5m 밖) 꺾어도 그 갈림길에서 꺾은 것으로 본다. 갈림길 위치는 '앞 몇 m' 눈대중이라
+    전에는 ㅁ자 층을 한 바퀴 돌아와도 같은 갈림길로 안 봐 고리가 안 닫히고, 없는 목적지를 600초 찾음 (2026-11-26 시뮬레이터 스트레스)."""
+    g, j, s = at_t_junction("499")            # 북쪽으로 6m, 갈림길은 2m 앞
+    came = g.edge
+    walk(g, s, 1, 90)                         # 들어서기 전에 오른쪽(동쪽)으로 꺾음
+    assert g.at is None and g.corridor_turn
+    assert g.branch[(j, 90)] == g.edge != came and g.branch[(j, 180)] == came
+
+
+def test_near_plates_merge_same_corridor_far_plates_do_not():
+    """가까이(3m 안) 본 확정 문패 2개가 다른 가지와 같으면 같은 복도로 합침. 멀리서 본 문패는 갈림길 건너편일 수 있어 안 씀."""
+    g = FloorGraph("499")
+    g.move(0, 0)
+    first = g.edge
+    for n in ("401", "402"):
+        g.see_number(n, 2.0, 0)
+    g.edge = g._new_edge()                    # 갈림길을 모르고 다른 가지로 기록됨 (출발 복도를 반대쪽에서 다시 들어옴)
+    g.branch[(0, 0)], g.branch[(0, 1)] = first, g.edge
+    g.see_number("401", 5.0, 180)             # 멀리서 본 것만으로는 안 합침
+    g.see_number("402", 5.0, 180)
+    assert g.branch[(0, 0)] == first
+    g.see_number("401", 2.0, 180)
+    g.see_number("402", 2.0, 180)
+    assert g.branch[(0, 0)] == g.edge
