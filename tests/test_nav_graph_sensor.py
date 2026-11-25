@@ -104,3 +104,17 @@ def test_front_target_side_check_says_sweep_not_turn_front():
     tr.seen(0.0, 3.0, "정면", 0)
     out = tr.unseen(1.0, 5)
     assert out and "좌우로 천천히 비춰" in out[0] and "정면으로" not in out[0]
+
+
+def test_standing_still_is_not_passing_when_steps_known():
+    """걸음 수가 있으면 위치는 걸음으로 옮긴다: 목적지를 3m 앞에 보고 "멈춰 주세요"로 서 있으면 시간이 지나도 '지나침'이 아님.
+    전에는 1초 = 한 칸으로 옮겨, 서서 확인하는 동안 지나쳤다고 보고 되돌려 보냄 (시뮬레이터 인식 오류 약함, 2.6m 앞에서 왕복).
+    걸음 수가 없으면 전처럼 시간으로 (서 있는지 모름)."""
+    for steps, want in ((40, "보임"), (None, "뒤쪽")):
+        g = CorridorGraph()
+        t = walk(g, 0, ["414", "415"], "왼쪽", 0)
+        g.see(t, "416", 1.0, "왼쪽", 3.0)
+        g.set_ok("416")
+        for k in range(12):
+            g.move(t + k, steps)
+        assert g.direction("416", now=t + 11)["direction"] == want

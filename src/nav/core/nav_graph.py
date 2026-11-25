@@ -8,12 +8,13 @@
 규칙(±1, 다수결) 대신 확률이라, 근거가 부족하면 틀리는 대신 '모름'으로 늦어진다.
 11/18~20 실험·시연: docs/20 (판단 지점 12/13, 11/20 105호 실제 U턴을 P=0.82로 알아챔).
 
-알려진 가정 (다른 건물에서 확인 필요): 방 번호는 숫자 3자리 안팎이고 첫 자리가 층, 위치는 1걸음(1초 구간) = 한 칸.
+알려진 가정 (다른 건물에서 확인 필요): 방 번호는 숫자 3자리 안팎이고 첫 자리가 층, 위치 한 칸 = 걷는 속도로 1초.
+위치는 휴대폰 걸음 수가 있으면 걸음으로, 없으면 시간으로 센다 (move).
 """
 
 import math
 
-from arrival import TURN_DEG, WALK_MPS  # 같은 core 폴더 (걷는 속도 가정, 돈 것으로 볼 방위 변화)
+from arrival import STEP_M, TURN_DEG, WALK_MPS  # 같은 core 폴더 (걸음 길이·걷는 속도 가정, 돈 것으로 볼 방위 변화)
 
 SIDE_SURE = 2 / 3  # 벽 표가 이 비율 이상 같아야 그래프에 넣음
 FLOW_EPS = 0.1     # 같은 벽 두 문패의 증감이 실제 흐름과 반대일 확률 (번호 건너뜀·오독)
@@ -45,6 +46,7 @@ class CorridorGraph:
         self.sense_flips, self.sense_dir = [], 1
         self.ends = set()  # 끝까지 가 본 쪽 (복도 기준 방향 ±1). 끝을 봤으면 거기까지 걸어온 것이라 그 사이는 다 지나옴
         self.end_run = 0
+        self.walk = []     # [(시각, 걸은 칸, 걸음 수)] move()로 받음. 없으면 시간 = 걸은 칸
 
     def see(self, t, room, score, side=None, dist=None):
         """문패 읽기 하나. side: 사용자 기준 '왼쪽'/'오른쪽'(모르면 None), dist: 문패까지 거리(m), score: 0~1 읽기 믿음."""
@@ -55,6 +57,26 @@ class CorridorGraph:
     def set_ok(self, room, ok=True):
         """문패 확정 여부 (확정은 각 버전의 믿음 점수 규칙이 정함). 층 판단과 '보임'에만 씀."""
         self.rooms.setdefault(room, {"best": 0.0, "total": 0, "ok": False})["ok"] = ok
+
+    def move(self, t, steps):
+        """사진마다 휴대폰 걸음 수(없으면 None). 걸음 수가 있으면 그만큼만 위치를 옮긴다 (멈춰 서 있으면 그대로).
+        전에는 시간만큼 옮겨, "멈춰 주세요"로 서서 확인하는 동안 목적지를 '지나쳤다'고 보고 되돌려 보냈다
+        (2026-11-25 시뮬레이터 인식 오류 약함, 목적지 2.6m 앞에서 왕복)."""
+        if self.walk and t <= self.walk[-1][0]:
+            return
+        if not self.walk:
+            self.walk.append((t, t, steps))
+            return
+        pt, pw, ps = self.walk[-1]
+        dw = (steps - ps) * STEP_M / WALK_MPS if steps is not None and ps is not None else t - pt
+        self.walk.append((t, pw + max(0.0, dw), steps))
+
+    def _w(self, t):
+        """시각 t까지 걸은 칸. 걸음 수를 받은 뒤로는 다음 사진 전까지 그대로, 시간으로 세던 중이면 시간만큼 더함."""
+        last = next((r for r in reversed(self.walk) if r[0] <= t), None)
+        if last is None:
+            return t
+        return last[1] + (0.0 if last[2] is not None else t - last[0])
 
     def sense_heading(self, t, deg):
         """사진을 찍을 때의 휴대폰 방위(도, 나침반). 처음 방위를 기준으로, 지금 걷는 방향에서 TURN_DEG 넘게 바뀌면
@@ -114,13 +136,15 @@ class CorridorGraph:
         def heading(t):
             return -1 if sum(t > f for f in fl_sorted) % 2 else 1
 
-        def pos(t):  # 시간(걸음 또는 초)마다 지금 방향으로 같은 속도로 움직인다고 봄 (걸음 수·지나감 사건이 오면 교체)
+        w = self._w
+
+        def pos(t):  # 걸은 칸(걸음 수, 없으면 시간)만큼 지금 방향으로 움직인다고 봄
             s_, prev, sign = 0.0, 0.0, 1
             for f in fl_sorted:
                 if t <= f:
                     break
-                s_, prev, sign = s_ + sign * (f - prev), f, -sign
-            return s_ + sign * (t - prev)
+                s_, prev, sign = s_ + sign * (w(f) - w(prev)), f, -sign
+            return s_ + sign * (w(t) - w(prev))
 
         tmax = max([x[0] for x in self.log] + [0] + ([now] if now is not None else []))
         reads = {}

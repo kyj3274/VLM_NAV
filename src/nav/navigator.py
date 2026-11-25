@@ -539,6 +539,7 @@ class Navigator:
         first = self.seg_n == 0  # 구간(경로 시작·엘리베이터 하차)의 첫 걸음
         heading = (self.sensor or {}).get("heading")
         self.mem.graph.sense_heading(clock, heading)  # 휴대폰 방위로 돌았는지 (core)
+        self.mem.graph.move(clock, (self.sensor or {}).get("steps"))  # 걸음 수로 복도 위 위치 (없으면 시간)
         # 갈림길 (core/floor_graph.py): 걸음 수·방위로 위치를 대략 알고, 깊이로 옆이 트인 곳을 갈림길로 기억
         self.floor.move((self.sensor or {}).get("steps"), heading)
         if self.floor.corridor_turn:  # 다른 축 복도로 들어섬: 복도 하나의 번호 흐름 판단은 새로
