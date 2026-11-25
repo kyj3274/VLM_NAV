@@ -342,7 +342,9 @@ class Navigator:
     def direction_say(self, target):
         """기억 그래프의 방향 판단을 안내 문장으로. 판단이 바뀌거나 새 문패가 근거에 들어올 때만 말한다."""
         st = self.st
-        d = self.mem.direction(target, st["dir_since"])
+        if self.arrival.asking():  # 멈춰서 옆을 비추는 중: 그래프는 계속 걷는다고 보므로 '지나침'을 내지 않음 (2026-11-25)
+            return []
+        d = self.mem.direction(target, st["dir_since"], self.clock)
         kind, walk = d["direction"], d.get("walk", [])
         st["dir_kind"] = kind  # '모름' 등이면 예전 방식(가장 가까운 문패 번호 증감)이 대신 안내
         if kind not in ("앞쪽", "뒤쪽", "근처"):
@@ -377,7 +379,7 @@ class Navigator:
 
     def target_unseen(self, target):
         """목적지 문패가 이번 걸음에 안 보일 때 (공통 판단 core/arrival.py)."""
-        return self.arrival.unseen(self.t_now(), (self.sensor or {}).get("steps"))
+        return self.arrival.unseen(self.t_now(), (self.sensor or {}).get("steps"), (self.sensor or {}).get("heading"))
 
     def turn_reset(self):
         """뒤로 돌라고 안내한 뒤: 이 걸음까지 본 문패는 반대 방향 기록이므로 다음 걸음부터 본 문패로 다시 판단."""
@@ -455,6 +457,11 @@ class Navigator:
         rooms = obs["rooms"]
         if mode == "situ":
             self.mem.place(clock, obs["raw"].get("place_groups") or {})
+            heading = (self.sensor or {}).get("heading")
+            self.mem.graph.sense_heading(clock, heading)  # 휴대폰 방위로 돌았는지 (core)
+            dinfo = obs["raw"].get("depth")
+            if dinfo and not self.arrival.asking():  # 깊이로 막다른 곳 (옆을 비추는 중에는 안 봄)
+                self.mem.graph.see_depth(clock, dinfo.get("far_m"), heading)
             rooms = self.vote(rooms, obs["src"], obs)
         say, vlm, vlm_why, note = [], [], [], {}
         if self.first_vlm:
@@ -648,7 +655,8 @@ class Navigator:
                 if mode == "situ" and dd is not None:  # 깊이로 잰 문패까지 거리 (문 상자가 없어도 됨)  # 문패는 문 위쪽 벽에 있어 깊이 거리가 조금 길게 나옴 → 둘 중 짧은 쪽
                     d, how = (dd, "깊이") if d is None else (min(d, dd), "문 높이·깊이")
                 side = SIDE(plate["cx"]) if plate else ""
-                self.arrival.seen(self.t_now(), d, side, (self.sensor or {}).get("steps"))  # 목적지 위치 기억 (core/arrival.py)
+                self.arrival.seen(self.t_now(), d, side, (self.sensor or {}).get("steps"),
+                                  heading=(self.sensor or {}).get("heading"))  # 목적지 위치 기억 (core/arrival.py)
                 if d is not None and d <= self.arrival.arrive_m():  # 옆을 비춰 확인 중이면 조금 넉넉히
                     say.append(f"도착했습니다. {side}의 문이 {target}호입니다.")
                     st["arrived"] = True

@@ -170,7 +170,9 @@ def test_target_needs_two_calls_but_floor_plate_one():
     recs = run(nav, 4)
     assert recs[0]["rooms"] == ["412"] and recs[0]["state"]["floor"] == "4"
     assert nv.QUICK_SAY in recs[0]["say"] and recs[0]["target_pending"]  # 2026-11-23: 5m 안 후보 → 빠른 확인 문장
-    assert recs[3]["rooms"] == ["410"] and "410호 문패가 11시 방향 약 3미터에 있습니다." in recs[3]["say"]
+    # 2026-11-25: 확정 전 읽기(0초)도 위치를 기억해 2초에 옆을 비추게 하고, 3초에 3m 앞에서 다시 보이면 다시 걷게 함
+    assert recs[2]["say"] and "왼쪽으로 천천히 돌려" in recs[2]["say"][0]
+    assert recs[3]["rooms"] == ["410"] and recs[3]["say"] == ["410호 문패가 왼쪽 약 3미터 앞에 있습니다. 천천히 가세요."]
     assert nav.mem.get("410")["calls"] == 2
 
 
@@ -229,12 +231,15 @@ def test_passed_target_then_neighbor_is_away():
     recs = run(nav, 18)
     assert recs[1]["action"] == "목적지 접근"
     # 2026-11-24: 확정한 목적지 문패가 복도 그래프에서 사용자 뒤로 2칸 넘게 → '지나침'
-    assert recs[3]["action"] == "뒤로 돌기" and "410호를 지나친 것 같습니다" in recs[3]["say"][0]
-    assert all(r["action"] == "뒤로 돌기" for r in recs[3:11])  # 412에도 '앞쪽입니다' 안 함
-    assert not any("앞쪽입니다" in x for r in recs for x in r["say"])
+    # 2026-11-25 sim 병합: 3초에 도착 추정이 먼저 옆을 비추게 하고, 그 뒤 다른 문패(412)를 읽고 그래프도 지나쳤다고 보면 '지나침'
+    # ('가능성 높음'으로 끝내지 않음)
+    k = next(i for i, r in enumerate(recs) if any("410호를 지나친 것 같습니다" in x for x in r["say"]))
+    assert k <= 6 and recs[k]["action"] == "뒤로 돌기"
+    assert all(r["action"] == "뒤로 돌기" for r in recs[k:k + 8])  # 412에도 '앞쪽입니다' 안 함
+    assert not any("앞쪽입니다" in x or "가능성이 높습니다" in x for r in recs for x in r["say"])
     # 2026-11-24 병합: 돌라고 한 지 8초(TURN_REPEAT) 뒤 그래프가 '돌았는지 모름'이면 행동은 직진, 무안내 문장도 "뒤로 돌아"를 되풀이 안 함
-    assert recs[11]["action"] == "직진" and recs[11]["state"]["dir_last"]["direction"] == "모름"
-    assert not any("뒤로 돌아" in x for r in recs[4:] for x in r["say"])
+    assert recs[k + 8]["action"] == "직진" and recs[k + 8]["state"]["dir_last"]["direction"] == "모름"
+    assert not any("뒤로 돌아" in x for r in recs[k + 1:] for x in r["say"])
 
 
 def test_passed_not_said_while_target_plate_in_photo():
@@ -245,7 +250,7 @@ def test_passed_not_said_while_target_plate_in_photo():
     exited(nav)
     nav.quick_max = 0
     recs = run(nav, 5)
-    assert "지나침" in recs[4]["direction"] and "안 씀" in recs[4]["direction"]
+    # 2026-11-25 sim 병합: 멈춘 동안은 도착 추정이 옆을 비추게 하고 그동안 그래프의 '지나침'은 말하지 않음
     assert not any("지나친" in x for r in recs for x in r["say"]) and recs[4]["action"] != "뒤로 돌기"
 
 
@@ -789,6 +794,16 @@ def test_perceiver_send_quality_and_passthrough(tmp_path):
     assert cp.Perceiver(fc)._key("see", f).endswith("|")   # 품질 90은 이전 캐시 키 그대로
 
 
+def test_latest_sensor_flips_stale_direction():
+    """지연 보정: 2초 전 사진의 판단을 말할 때, 그 사이 휴대폰 방위가 180° 바뀌었으면 앞/뒤를 바꿔 말한다 (2026-11-25 시뮬레이터)."""
+    nav = nv.Navigator(ScriptRunner([O()]), "410")
+    nav.sensor = {"heading": 0}
+    nav.latest = {"t": nav.clock + 2, "heading": 180}
+    assert nav.turned_since()
+    nav.latest = {"t": nav.clock + 2, "heading": 60}  # 옆을 비춘 정도는 돈 것이 아님
+    assert not nav.turned_since()
+
+
 # ---------------------------------------------------------------- 2026-11-23 (B) 엘리베이터에서 내린 뒤
 IE = O(place="in_elev")
 RIDE = [IE] * nv.EXIT_IN
@@ -1032,13 +1047,15 @@ def test_start_on_goal_floor_405_scans_then_guides():
     quiet = [x for x in after if x["say"] == [nv.QUIET_GOAL]]
     assert quiet and quiet[0]["t"] - d["t"] == 10
     assert recs[-3]["say"] == [] and recs[-2]["say"] == []
-    assert recs[-1]["say"] == ["406호를 지났습니다. 405호는 앞쪽입니다. 계속 직진하세요."]
+    # 2026-11-25 sim 병합: 406은 아직 앞(3m)이라 지난 문패는 407
+    assert recs[-1]["say"] == ["407호를 지났습니다. 405호는 앞쪽입니다. 계속 직진하세요."]
 
 
 def test_start_on_goal_floor_410_toward_and_far_away():
     nav, recs = _start_4f("410", [O([("408", "R", 3.0, "door")])] * 3)
     assert "410호를 찾겠습니다" in recs[6]["say"][0]
-    assert recs[-1]["say"] == ["408호를 지났습니다. 410호는 앞쪽입니다. 계속 직진하세요."]  # 407→408 (병합 뒤 408 세 번째 읽기에)
+    # 2026-11-25 sim 병합: 408은 아직 앞(3m)이라 지난 문패는 407 (core가 지나온 문패를 위치로 고름)
+    assert recs[-1]["say"] == ["407호를 지났습니다. 410호는 앞쪽입니다. 계속 직진하세요."]
 
 
 @pytest.mark.xfail(strict=True, reason="core/nav_graph.py 확인 요청 (docs/17 21절): 목적지에 가장 가까운 번호의 벽(407, 오른쪽)에 "

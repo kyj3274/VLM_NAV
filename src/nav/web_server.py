@@ -414,6 +414,10 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
             path.write_bytes(image.file.read())
             ws.last_frame = path
             t_cap = float(t) if t is not None else round(recv - ws.started, 2)
+            with ws.slock:  # 가장 최근 센서: 앞서 보낸 사진의 인식 결과를 넣을 때 '찍은 뒤 걸은 거리·돈 것' 보정 (Navigator.fresh)
+                lt = ws.nav.latest
+                if lt is None or t_cap >= lt["t"]:
+                    ws.nav.latest = {"t": t_cap, "steps": steps, "heading": heading}
             img_size = None
             try:
                 from PIL import Image as _Image
