@@ -163,7 +163,8 @@ class FloorGraph:
             self.event(f"갈림길 발견 ({m:.0f}m 앞, 트인 쪽 {', '.join(sorted(opens))})")
         rel = {"ahead": 0, "right": 90, "left": 270}
         self.junctions[j]["open"] |= {(h + rel[o]) % 360 for o in opens}
-        if m > AT_M and (j, (h + 180) % 360) not in self.branch:  # 다가가는 중: 지금 걷는 가지가 그 갈림길의 뒤쪽 가지
+        if m > AT_M:  # 다가가는 중: 지금 걷는 가지가 그 갈림길의 뒤쪽 가지. 이미 다른 가지가 있으면 같은 복도라 합침
+            # (전에는 있으면 그냥 둬서, ㅁ자 층의 한 변이 두 가지로 남아 양 끝 갈림길이 서로 '안 가 본 곳'이라며 왕복시킴, 2026-11-26)
             self._link(j, (h + 180) % 360, self.edge)
         for s in signs or []:
             c = (h + rel.get(s["dir"], 0)) % 360

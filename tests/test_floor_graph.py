@@ -97,3 +97,14 @@ def test_near_plates_merge_same_corridor_far_plates_do_not():
     g.see_number("401", 2.0, 180)
     g.see_number("402", 2.0, 180)
     assert g.branch[(0, 0)] == g.edge
+
+
+def test_approaching_junction_merges_its_back_branch():
+    """갈림길로 다가가는 복도는 그 갈림길의 뒤쪽 가지와 같은 복도: 이미 다른 가지로 적혀 있어도 합친다.
+    전에는 그냥 둬서 ㅁ자 층의 한 변이 두 가지로 남고, 양 끝 갈림길이 서로 '안 가 본 곳'이라며 왕복시킴
+    (2026-11-26 시뮬레이터 스트레스 없는 목적지, 이름 층 ㅁ자 16/20 헤맴)."""
+    g, j, s = at_t_junction("도서관")         # 갈림길 남쪽 가지 = 처음 걷던 가지
+    first = g.branch[(j, 180)]
+    g.edge = g._new_edge()                    # 다른 쪽에서 들어와 다른 가지로 적힘
+    g.see_junction(3.0, ["left", "right"], 0)
+    assert g.branch[(j, 180)] == g.edge and first not in g.branch.values()
