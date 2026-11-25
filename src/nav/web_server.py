@@ -30,14 +30,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile  # noqa: E402
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import claude_perceiver as cp  # noqa: E402
 from claude_client import ROOT, CreditLimit, GatewayClient, Ledger  # noqa: E402
-from dest_parse import parse_destination, parse_here_floor  # noqa: E402
+from dest_parse import announce, parse_destination, parse_here_floor  # noqa: E402
 from navigator import QUICK_SHOTS, Navigator, Runner  # noqa: E402
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -131,6 +131,10 @@ class DestBody(BaseModel):
     quick_confirm: bool = True          # 휴대폰 설정 '빠른 확인' (끄면 이 세션은 confirm을 보내지 않음)
 
 
+class ClientLog(BaseModel):
+    events: list[dict] = []             # 휴대폰 쪽 기록: 응답 받음(got), 음성 시작·끝(say_start·say_end), 네트워크 오류(net_fail) …
+
+
 class EventBody(BaseModel):
     type: str                           # exited | end | stop | repeat | pause | resume
     detail: dict = {}
@@ -192,6 +196,12 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
     daily = DailyCredit(cfg.sessions_dir / "daily_credit.json")
     stt = {"t": transcriber}
     app = FastAPI(title="vlm_nav_claude web")
+
+    @app.middleware("http")
+    async def stamp_arrival(request: Request, call_next):
+        """요청이 서버에 닿은 시각 (사진 본문을 받기 전). 핸들러 시작(recv)과의 차이 = 업로드 시간."""
+        request.state.arrive = time.monotonic()
+        return await call_next(request)
     app.state.sessions, app.state.cfg, app.state.daily = sessions, cfg, daily
 
     def check_code(x_access_code: str | None = Header(None), code_q: str | None = Query(None, alias="code")):
@@ -244,7 +254,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 "model": getattr(client, "model", ""), "fake": cfg.fake, **info, **ws.info})
         here = f" 지금 {dest['here']}층에서 출발합니다." if dest.get("here") else ""
         return {"status": "ok", "session_id": sid, "target": dest["target"], "name": dest["name"],
-                "say": [f"{dest['name']}로 안내하겠습니다.{here}"], "floor": dest.get("here")}
+                "say": [announce(dest) + here], "floor": dest.get("here"), "readback": dest.get("readback", "")}
 
     def change(ws: WebSession, dest: dict, info: dict) -> dict:
         """안내 중 목적지 변경. 같이 말한 지금 층("4층에서 105호")이 있으면 그 층도 반영한다.
@@ -259,7 +269,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         ws.log({"event": "destination", "wall": wall(), "t": ws.nav.clock, "target": dest["target"],
                 "here": dest.get("here"), "next": nxt, "action": action, **info})
         return {"status": "ok", "session_id": ws.id, "target": dest["target"], "name": dest["name"],
-                "say": [f"{dest['name']}로 안내하겠습니다."] + nxt, "floor": floor, "action": action}
+                "say": [announce(dest)] + nxt, "floor": floor, "action": action, "readback": dest.get("readback", "")}
 
     def here_floor(ws: WebSession, floor: str, info: dict) -> dict:
         """안내 중 "여기 4층이야": 지금 층으로 바로 반영 (2026-11-23 사용자 지시 2). 문패와 같은 근거."""
@@ -340,31 +350,51 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
 
     # ------------------------------------------------------------ 사진 (겹쳐 보내기)
     @app.post("/api/session/{sid}/frame", dependencies=[Depends(check_code)])
-    def frame(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
-              steps: int | None = Form(None), client: str = Form("{}"), seg: int | None = Form(None)):
-        return process(get_ws(sid), image, t, heading, steps, client, quick=False, seg=seg)
+    def frame(sid: str, request: Request, image: UploadFile = File(...), t: float | None = Form(None),
+              heading: float | None = Form(None), steps: int | None = Form(None), client: str = Form("{}"),
+              seg: int | None = Form(None)):
+        return process(get_ws(sid), image, t, heading, steps, client, quick=False, seg=seg, request=request)
 
     @app.post("/api/session/{sid}/confirm", dependencies=[Depends(check_code)])
-    def confirm(sid: str, image: UploadFile = File(...), t: float | None = Form(None), heading: float | None = Form(None),
-                steps: int | None = Form(None), client: str = Form("{}"), seg: int | None = Form(None)):
+    def confirm(sid: str, request: Request, image: UploadFile = File(...), t: float | None = Form(None),
+                heading: float | None = Form(None), steps: int | None = Form(None), client: str = Form("{}"),
+                seg: int | None = Form(None)):
         """빠른 확인 (2026-11-23 사용자 지시 B3~B5). 응답에 confirm이 오면 휴대폰이 곧바로 0.4초 간격으로 2장을 찍어
         동시에 보낸다. 가장 가까운 문패 번호만 읽는 짧은 호출(줄 밖) → 같은 순서 규칙(seq)으로 상태에 넣는다.
         동시 한도에 2장을 더 허용."""
-        return process(get_ws(sid), image, t, heading, steps, client, quick=True, seg=seg)
+        return process(get_ws(sid), image, t, heading, steps, client, quick=True, seg=seg, request=request)
 
     def old_segment(ws: WebSession, seq: int, seg: int, t, why: str):
         ws.counts["old_segment"] += 1
         ws.log({"event": "old_segment", "web_seq": seq, "seg": seg, "now_seg": ws.seg, "t": t, "why": why})
         return {"status": "stale", "seq": seq, "say": [], "reason": "old_segment"}
 
-    def process(ws: WebSession, image, t, heading, steps, client, quick, seg=None):
+    def process(ws: WebSession, image, t, heading, steps, client, quick, seg=None, request=None):
+        """기록 실패나 예외도 남긴다 (2026-11-23 시험 전 기록 보강)."""
+        try:
+            return _process(ws, image, t, heading, steps, client, quick, seg, request)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            ws.log({"event": "error", "wall": wall(), "epoch": round(time.time(), 3), "where": "frame",
+                    "quick": quick, "t": t, "error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()[-2000:]})
+            raise
+
+    def _process(ws: WebSession, image, t, heading, steps, client, quick, seg=None, request=None):
         """seg: 휴대폰이 사진을 찍을 때의 구간 번호 ("내렸어요"를 누른 횟수). PR #1 리뷰 2: 내리기 전에 찍은 사진
         (엘리베이터 안, 이전 층)이 새 구간 첫 걸음으로 들어가지 않게, 휴대폰 구간 번호가 서버 구간보다 작거나
         받은 때와 상태에 넣을 때의 서버 구간이 다르면 버린다."""
-        recv = time.monotonic()
+        recv = time.monotonic()   # 핸들러 시작 = 사진 업로드(본문 받기) 끝
+        recv_epoch = time.time()
+        arrive = getattr(getattr(request, "state", None), "arrive", None) if request is not None else None
+        try:
+            cl = json.loads(client or "{}")
+        except ValueError:
+            cl = {}
         if ws.stopped:
             return {"status": "stopped", "say": [], "reason": ws.stop_reason}
         if seg is not None and seg < ws.seg:
+            ws.log({"event": "dropped", "why": "찍을 때 구간이 이전", "quick": quick, "t": t, "heading": heading, "client": cl,
+                    "recv_s": round(recv - ws.started, 3)})
             return old_segment(ws, 0, seg, t, "찍을 때 구간이 이전")
         reason = limit_reason(ws)
         if reason:
@@ -374,6 +404,7 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                 ws.counts["busy"] += 1
                 return {"status": "busy", "say": []}
             ws.inflight += 1
+            inflight_at = ws.inflight   # 이 사진을 포함한 서버 동시 처리 수
             ws.seq += 1
             seq = ws.seq
             seg_at = ws.seg
@@ -383,6 +414,14 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
             path.write_bytes(image.file.read())
             ws.last_frame = path
             t_cap = float(t) if t is not None else round(recv - ws.started, 2)
+            img_size = None
+            try:
+                from PIL import Image as _Image
+                with _Image.open(path) as im:
+                    img_size = list(im.size)
+            except Exception:  # noqa: BLE001
+                pass
+            rel = lambda x: round(x - ws.started, 3) if x is not None else None  # noqa: E731  서버 시계(세션 시작부터 초)
             t0 = time.monotonic()
             try:
                 if quick:
@@ -395,7 +434,10 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
             except CreditLimit as e:
                 sync_credit(ws)
                 return stop(ws, str(e))
-            see_s = time.monotonic() - t0
+            t_see_end = time.monotonic()
+            see_s = t_see_end - t0
+            calls_log = [{"kind": "quick" if quick else "see", "start_s": rel(t0), "end_s": rel(t_see_end),
+                          "cached": r.get("cached"), **(r.get("call") or {})}]
             o = {"key": str(path), "keys": [str(path)], "pick_seconds": 0.0, **r}
             if ws.nav.runner.depth is not None and r.get("obs") and not quick:  # 깊이: 문패 벽 쪽·거리 (상태 잠금 밖)
                 o["depth_seconds"] = ws.nav.runner.add_depth(str(path), r["obs"])
@@ -412,37 +454,50 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                     except CreditLimit as e:
                         sync_credit(ws)
                         return stop(ws, str(e))
-                    rc_s = time.monotonic() - t1
+                    t2 = time.monotonic()
+                    rc_s = t2 - t1
                     rechecked = (cand, why, rc)
+                    if rc:
+                        calls_log.append({"kind": "recheck", "asked": cand.get("n") or cand.get("name"), "why": why,
+                                          "start_s": rel(t1), "end_s": rel(t2), "cached": rc.get("cached"),
+                                          **(rc.get("call") or {})})
                 else:
                     rechecked = (None, None, None)
             ready = time.monotonic()
+            timing = {"arrive_s": rel(arrive), "recv_s": rel(recv), "recv_epoch": round(recv_epoch, 3),
+                      "see_start_s": rel(t0), "see_end_s": rel(t_see_end), "ready_s": rel(ready)}
+            base_log = {"web_seq": seq, "quick": quick, "frame": path.name, "t": t_cap, "heading": heading, "steps": steps,
+                        "client": cl, "img_bytes": path.stat().st_size, "img_size": img_size, "inflight_server": inflight_at,
+                        "timing": timing, "calls_log": calls_log}
             with ws.alock:
                 if seg_at != ws.seg:  # 처리하는 동안 "내렸어요" (리뷰 2)
                     sync_credit(ws)
+                    ws.log({"event": "dropped", "why": "처리 중 내림", **base_log, "obs": r.get("obs")})
                     return old_segment(ws, seq, seg_at, t_cap, "처리 중 내림")
-                if seq <= ws.last_applied or ws.stopped:  # 더 나중에 보낸 결과를 이미 넣었음
+                # 더 나중에 보낸 결과를 이미 넣었음. 빠른 확인 사진은 버리지 않는다 (2026-11-23 두 시험 모두 2장 중 1장이
+                # 같이 보낸 다른 장보다 늦게 끝나 버려져 '서로 다른 사진 2장' 확인이 안 됨). 문패 읽기만 더하므로 순서가 바뀌어도 됨
+                if (seq <= ws.last_applied and not quick) or ws.stopped:
                     ws.counts["stale"] += 1
                     sync_credit(ws)
-                    ws.log({"event": "stale", "web_seq": seq, "t": t_cap, "after": ws.last_applied, "credit": r["call"].get("credit"),
-                            "quick": quick})
+                    ws.log({"event": "stale", "after": ws.last_applied, "credit": r["call"].get("credit"),
+                            **base_log, "obs": r.get("obs")})
                     return {"status": "stale", "seq": seq, "say": []}
                 t_cap = max(t_cap, float(ws.nav.clock) + 0.01) if ws.nav.records else t_cap
-                ws.nav.sensor = {"steps": steps, "heading": heading}  # 휴대폰 걸음 수: 목적지까지 걸은 거리 추정 (core/arrival.py)
+                t_apply = time.monotonic()  # 휴대폰 걸음 수·방위는 step(heading, steps)으로 넘김 (navigator가 self.sensor에 둠)
                 try:
-                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked)
+                    rec = ws.nav.step(t=round(t_cap, 2), observed=o, quick=quick, rechecked=rechecked, heading=heading,
+                                      steps=steps)
                 except CreditLimit as e:  # 확대 재확인에서 한도
                     sync_credit(ws)
                     return stop(ws, str(e))
-                ws.last_applied = seq
+                ws.last_applied = max(ws.last_applied, seq)
                 now = time.monotonic()
                 ws.applied_at.append(now)
                 ws.counts["applied"] += 1
                 ws.counts["errors"] += bool(rec["error"])
-                try:
-                    cl = json.loads(client or "{}")
-                except ValueError:
-                    cl = {}
+                timing.update(apply_start_s=rel(t_apply), applied_s=rel(now))
+                rec.update(timing=timing, calls_log=calls_log, img_size=img_size, inflight_server=inflight_at,
+                           seg_phone=seg)
                 rec.update(web_seq=seq, quick=quick, wall=wall(), heading=heading, steps=steps, client=cl, frame=path.name,
                            see_s=round(see_s, 3), server_s=round(now - recv, 3), recheck_s=round(rc_s, 3),
                            lock_wait_s=round(now - ready, 3), recv_s=round(recv - ws.started, 3),
@@ -459,7 +514,9 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
                          "arrived": st.get("arrived"), "rooms": rec["rooms"], "error": rec["error"],
                          "server_s": rec["server_s"], "see_s": rec["see_s"], "credit": ws.credit,
                          "target": ws.target, "detail": detail_of(ws),
-                         "confirm": bool(rec.get("confirm_now")), "quick": quick}
+                         "confirm": bool(rec.get("confirm_now")), "confirm_after": rec.get("confirm_after", "start"),
+                         "quick": quick,
+                         "exited": bool(rec.get("auto_exit")), "direction": rec.get("direction")}
                 ws.last_reply = reply
                 return reply
         finally:
@@ -474,21 +531,30 @@ def create_app(cfg: Settings | None = None, client_factory=None, transcriber=Non
         say = []
         with ws.alock:
             if body.type == "exited":  # 엘리베이터에서 내림 (영상 파일 모드는 두 번째 파일부터 자동)
-                if not ws.nav.records:  # 사진을 보내기 전에 눌러도 층이 바뀐 것으로 (새 구간)
-                    ws.nav.seg_n = 1
-                ws.nav.new_segment(f"live_{ws.nav.si + 1}")
-                # 리뷰 2: 지금까지 보낸 사진은 모두 이전 구간 → 결과가 와도 버린다 (구간 번호 + last_applied 둘 다)
+                # 리뷰 2: 지금까지 보낸 사진은 모두 이전 구간 → 결과가 와도 버린다 (구간 번호 + last_applied 둘 다).
+                # 휴대폰은 누를 때마다 구간 번호를 올리므로 서버도 늘 올린다 (같은 하차로 보는 경우에도).
                 ws.seg += 1
                 ws.last_applied = ws.seq
-                carry = ws.nav.st["floor"]
-                say = ["엘리베이터에서 내렸습니다. " + (f"표시창으로는 {carry}층입니다. 문패로 확인하겠습니다."
-                                                    if carry else "지금 층을 확인하겠습니다.")]
+                # 2026-11-23 B5·B6: 자동 하차 감지 뒤 20초 안에 누르면 같은 하차 (다시 처리하지 않음)
+                said = ws.nav.exit_elevator("버튼")
+                say = said if said is not None else ["엘리베이터에서 내린 것을 이미 확인했습니다."]
             elif body.type in ("end", "stop"):
                 ws.stopped, ws.stop_reason = True, {"end": "사용자가 끝냄", "stop": "관찰자 비상 정지"}[body.type]
                 say = ["안내를 마칩니다."] if body.type == "end" else ["안내를 멈췄습니다."]
-        ws.log({"event": body.type, "wall": wall(), "t": ws.nav.clock, "segment": ws.nav.si, "seg": ws.seg,
-                "last_applied": ws.last_applied, **body.detail})
+        ws.log({"event": body.type, "wall": wall(), "epoch": round(time.time(), 3), "t": ws.nav.clock,
+                "server_s": round(time.monotonic() - ws.started, 3), "segment": ws.nav.si, "seg": ws.seg,
+                "last_applied": ws.last_applied, "say": say, **body.detail})
         return {"status": "ok", "say": say, "segment": ws.nav.si, "seg": ws.seg}
+
+    @app.post("/api/session/{sid}/clientlog", dependencies=[Depends(check_code)])
+    def clientlog(sid: str, body: ClientLog):
+        """휴대폰 쪽 기록 묶음 (응답 받은 시각, 음성 시작·끝, 네트워크 오류). Claude를 부르지 않는다."""
+        ws = get_ws(sid)
+        now = round(time.monotonic() - ws.started, 3)
+        for e in body.events[:200]:
+            ws.log({"event": "client", "server_s": now, **{k: v for k, v in e.items() if k != "event"},
+                    "kind": e.get("k") or e.get("kind")})
+        return {"status": "ok", "n": len(body.events[:200])}
 
     # ------------------------------------------------------------ 관찰자·기록
     @app.get("/api/monitor", dependencies=[Depends(check_code)])

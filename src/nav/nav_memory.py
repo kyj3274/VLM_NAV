@@ -67,9 +67,11 @@ class Memory:
             p.update(ok=ok, ok_t=p.get("ok_t") if ok else None)
         self.graph.set_ok(room, ok)
 
-    def see(self, t, room, side, m, on, recheck=None, wall=None, dist=None):
+    def see(self, t, room, side, m, on, recheck=None, wall=None, dist=None, graph=True):
         """문패 번호를 한 번 읽음. recheck: True 일치 / False 다른 번호 / None 안 함·못 읽음.
         wall: 깊이로 정한 사용자 기준 벽('왼쪽'/'오른쪽'/'?'), dist: 깊이로 잰 거리(m). 없으면 Claude 값.
+        graph: 복도 그래프(진행 방향)에 넣을지. 빠른 확인 사진·내린 뒤 둘러보는 사진은 False (2026-11-24 병합, docs/17 21절).
+        확대 재확인이 다른 번호로 읽은 것(recheck False)도 그래프에 넣지 않는다 (확정에서 빼는 것과 같은 기준).
         기록을 갱신하고 돌려준다 (rec["ok"]가 확정 여부)."""
         p = self.plates.setdefault((self.seg, room), {"room": room, "first": t, "last": -99, "n": 0, "total": 0,
                                                        "front": False, "door": False, "near": False, "recheck": False,
@@ -89,7 +91,7 @@ class Memory:
         p["total"] += 1
         p["last"] = t
         g_side = None if wall == "?" else wall or {"L": "왼쪽", "R": "오른쪽"}.get(side)
-        if room.isdigit():
+        if room.isdigit() and graph and recheck is not False:
             self.graph.see(t, room, 1.0 if recheck is True else 0.9, g_side, dist if dist is not None else m)
         p["front"] |= side == "C" and m is not None and m <= FRONT_M
         p["door"] |= on == "door"

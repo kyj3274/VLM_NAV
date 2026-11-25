@@ -71,3 +71,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); ou
 .rec { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); background: var(--bad); color: #fff;
   font-size: 24px; font-weight: 800; padding: 20px 28px; border-radius: 16px; z-index: 10; text-align: center; }
 @media (max-width: 380px) { .caption { font-size: 26px; } .btns button { font-size: 15px; } }
+
+/* 센서 허락 상태 (2026-11-23): 크게 */
+.perm { font-size: 22px; font-weight: 700; margin: 12px 0; padding: 10px 12px; border-radius: 10px; background: #333; color: #fff; }
+.perm.ok { background: #1b5e20; }
+.perm.bad { background: #b71c1c; }
