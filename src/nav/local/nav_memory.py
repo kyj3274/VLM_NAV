@@ -100,9 +100,9 @@ class Memory:
         """뒤로 돌라고 안내함 (공통 판단 core/nav_graph.py)."""
         self.graph.turned(t)
 
-    def direction(self, target, since=-1):
-        """복도 고정 그래프 위의 확률 방향 판단 (공통 판단 core/nav_graph.py). since는 예전 호환용."""
-        return self.graph.direction(target)
+    def direction(self, target, since=-1, now=None):
+        """복도 고정 그래프 위의 확률 방향 판단 (공통 판단 core/nav_graph.py). since는 예전 호환용, now는 지금 걸음."""
+        return self.graph.direction(target, now)
 
     def dump(self):
         return {"target": self.target, "segment": self.seg, "events": self.events, "places": self.places,
