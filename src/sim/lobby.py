@@ -130,7 +130,7 @@ def hidden(lb, a, q):
 
 
 def observe(lb, w, target):
-    cam, plates, hit = (w.b - w.yaw) % 360, [], None
+    cam, plates, hit, unread = (w.b - w.yaw) % 360, [], None, []
     cols = [(wall_dist(lb, w.p, (cam + a) % 360), 0.5 + a / world.FOV) for a in range(-30, 31, 2)]  # 오른쪽(+방위)이 화면 오른쪽
     far_m, far_x = max(cols)
     info = {"far_m": round(far_m, 1), "far_x": round(far_x, 3)}
@@ -140,12 +140,14 @@ def observe(lb, w, target):
         rel = _wrap(cam - brg)  # 왼쪽 +
         back = bearing(d["p"], w.p)
         oblique = abs(_wrap(back - bearing((0, 0), d["n_in"])))
-        if dist > (ISLAND_RANGE if d.get("island") else world.RANGE) or abs(rel) > world.FOV / 2 or oblique > world.OBLIQUE:
-            continue
-        if hidden(lb, w.p, (d["p"][0] + d["n_in"][0] * 0.05, d["p"][1] + d["n_in"][1] * 0.05)):
+        if abs(rel) > world.FOV / 2 or hidden(lb, w.p, (d["p"][0] + d["n_in"][0] * 0.05, d["p"][1] + d["n_in"][1] * 0.05)):
             continue
         cx = min(max(50 - rel / world.FOV * 100, 3), 97)
         side = "L" if cx < 100 / 3 else "R" if cx > 200 / 3 else "C"
+        if dist > (ISLAND_RANGE if d.get("island") else world.RANGE) or oblique > world.OBLIQUE:
+            if dist <= world.SEE_M:  # 보이는데 글자는 못 읽음 (world.observe와 같음)
+                unread.append({"img": None, "n": "", "name": "", "side": side, "m": round(dist, 1), "on": "door"})
+            continue
         q = {"img": None, "n": d["n"], "name": "", "side": side, "m": round(dist, 1), "on": "door",
              "box": [round(cx - 3), 30, round(cx + 3), 36],
              "wall": depth.wall_side(info, cx / 100), "dm": round(dist, 2)}
@@ -155,7 +157,7 @@ def observe(lb, w, target):
     plates.sort(key=lambda p: p["m"])
     obs = world.observe({"doors": [], "length": 1}, 0, 1)  # 빈 칸 모양만 빌림
     obs.update(plates=[p for p in plates if p["n"].isdigit()][:world.MAX_PLATES], place="lobby",
-               depth=info)
+               depth=info, unread=unread)
     ahead = wall_dist(lb, w.p, w.b) - WALL_M
     if JUNCTION and not w.yaw and ahead <= fw.JUNC_SEE:
         vx, vy = fw.vec(w.b)

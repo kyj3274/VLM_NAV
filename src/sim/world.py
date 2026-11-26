@@ -15,6 +15,7 @@ WIDTH = 2.4        # 복도 폭 (m)
 FOV = 60           # 카메라 가로 시야각 (도)
 RANGE = 8.0        # 문패를 읽을 수 있는 최대 거리 (m). 실험 건물 영상(720p)과 맞춘 값은 5 (check_video.py)
 OBLIQUE = 80       # 벽에 붙은 문패를 이 각도(벽의 법선 기준)보다 비스듬히 보면 못 읽음 (도)
+SEE_M = 10.0       # 문은 이 거리까지 보이지만 문패 글자는 RANGE 안에서만 읽힘: 그 사이는 '번호 못 읽은 문패'(unread). 가정
 MAX_PLATES = 4     # 한 장에서 받는 문패 수 (claude_perceiver.clean과 같음)
 WALK_MPS = 0.8     # 걷는 속도
 STEP_M = 0.6       # 걸음 하나
@@ -141,26 +142,30 @@ def observe(corr, x, heading, yaw=0.0, all_plates=False):
     all_plates: 시야·거리를 따지지 않고 앞쪽 모든 문패 (실제 영상에 보인 문패의 거리·위치를 지도로 잴 때)."""
     body = 0.0 if heading > 0 else 180.0
     cam = body + yaw
-    plates = []
+    plates, unread = [], []
     for d in corr["doors"]:
         dx, dy = d["x"] - x, wall_y(d["wall"])
         dist = math.hypot(dx, dy)
         rel = _wrap(math.degrees(math.atan2(dy, dx)) - cam)
         oblique = math.degrees(math.atan2(abs(dx), abs(dy)))  # 벽 법선과 시선 사이 각도
+        cx = min(max(50 - rel / FOV * 100, 3), 97)  # 왼쪽(+)이 화면 왼쪽
+        side = "L" if cx < 100 / 3 else "R" if cx > 200 / 3 else "C"
         if all_plates:
             if abs(rel) >= 90:
                 continue
-        elif dist > RANGE or abs(rel) > FOV / 2 or oblique > OBLIQUE:
+        elif abs(rel) > FOV / 2:
             continue
-        cx = min(max(50 - rel / FOV * 100, 3), 97)  # 왼쪽(+)이 화면 왼쪽
-        side = "L" if cx < 100 / 3 else "R" if cx > 200 / 3 else "C"
+        elif dist > RANGE or oblique > OBLIQUE:
+            if dist <= SEE_M:  # 문은 보이는데 글자는 못 읽음 (확대 재확인 대상이 아니게 box 없음)
+                unread.append({"img": None, "n": "", "name": "", "side": side, "m": round(dist, 1), "on": "door"})
+            continue
         left = math.sin(math.radians(math.degrees(math.atan2(dy, dx)) - body)) > 0
         plates.append({"img": None, "n": d["n"], "name": "", "side": side, "m": round(dist, 1), "on": "door",
                        "box": [round(cx - 3), 30, round(cx + 3), 36],
                        "wall": "?" if yaw else ("왼쪽" if left else "오른쪽"), "dm": round(dist, 2)})
     plates.sort(key=lambda p: p["m"])
     return {"plates": plates if all_plates else plates[:MAX_PLATES], "depth": {"far_m": far_m(corr, x, cam), "far_x": 0.5},
-            "unread": [], "floor_sign": "", "floor": None, "place": "corridor",
+            "unread": unread, "floor_sign": "", "floor": None, "place": "corridor",
             "stair_sign": "", "stair_floors": [], "door_ahead": "none",
             "elev": {"seen": False, "cand": False, "why": "none", "side": "none", "m": None, "btn": "none"},
             "arrows": [], "fixes": [], "elev_floor": None}
