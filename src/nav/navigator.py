@@ -53,6 +53,9 @@ JUNC_SAY = 3.0    # 갈림길이 이 거리(m) 안에 보이면 어느 복도로
 JUNC_NEAR = 1.0   # 이보다 가까우면 말하지 않음 (갈림길에서 막 돌아선 때: 이미 고른 뒤)
 SCAN_M = 12.0      # 넓은 곳(로비)에서 목적지를 못 보고 이만큼 걸을 때마다 제자리에서 한 바퀴 둘러보게 함 (시뮬레이터 로비 섬)
 SCAN_SHOTS = 8    # 한 바퀴에 받는 사진 수 (45°씩)
+MIND_SIDE = {"L": -20, "R": 20}  # 머릿속 지도: 화면 왼쪽·오른쪽에 보인 것은 카메라 방향에서 대략 이만큼 (core/arrival.py와 같음)
+MIND_SAME_M = 2.5  # 못 읽은 문이 찍은 문패·못 읽은 문과 이 거리 안이면 같은 것으로 봄 (그림만. 거리·쪽이 눈대중이라 넉넉히)
+MIND_KEEP = 600    # 웹에 보낼 길·시야 기록 수 (최근 것)
 GIVE_UP_M = 40.0  # 넓은 곳에서 가 본 곳만 이만큼 다니면(새 곳 없음) 못 찾았다고 알림 (더 알 것이 없음 = 안전한 실패)
 VISIT_M = 4.0     # 가 본 자리에서 이보다 멀면 새 곳 (벽 문패는 5m 안에서 읽힘)
 SCAN_SAY = "넓은 곳입니다. 제자리에서 휴대폰을 앞으로 들고 천천히 한 바퀴 돌아 주세요."
@@ -196,6 +199,7 @@ class Navigator:
         self.mem = nav_memory.Memory(target)
         self.arrival = TargetTracker(target, lambda text: self.mem.event(self.clock, text))  # 도착 추정 (core/arrival.py)
         self.floor = FloorGraph(target, lambda text: self.mem.event(self.clock, text))  # 갈림길·복도 가지 (core/floor_graph.py)
+        self.mind_reset()
         self.sensor = None  # 웹이 걸음마다 넣는 휴대폰 센서 {"steps", "heading"} (없으면 시간으로 걸은 거리 추정)
         # 가장 최근에 받은 사진의 센서 {"t", "steps", "heading"}. 지금 처리하는 사진(인식이 끝난 2초 전 사진)보다 새로울 수 있다.
         # 사진을 찍은 뒤 걸은 거리·돈 것을 보정하는 데 씀 (지연 보정, 2026-11-25 시뮬레이터)
@@ -328,6 +332,7 @@ class Navigator:
                            scan=self.new_scan(max(self.seg_start, self.clock)))  # 자동 감지: 내림을 알고 "멈춰서 비춰 주세요"라고 한 때부터
             self.arrival.reset()
             self.floor.reset()
+            self.mind_reset()
             if carry and src == "엘리베이터 표시창":
                 self.mem.event(self.clock, f"내린 층 임시 {carry}층 (엘리베이터 안 층 표시창)")
             elif carry and src == "엘리베이터 이동":
@@ -542,6 +547,7 @@ class Navigator:
         self.mem.graph.move(clock, (self.sensor or {}).get("steps"))  # 걸음 수로 복도 위 위치 (없으면 시간)
         # 갈림길 (core/floor_graph.py): 걸음 수·방위로 위치를 대략 알고, 깊이로 옆이 트인 곳을 갈림길로 기억
         self.floor.move((self.sensor or {}).get("steps"), heading)
+        self.mind_note(obs, heading)
         if self.floor.corridor_turn:  # 다른 축 복도로 들어섬: 복도 하나의 번호 흐름 판단은 새로
             self.mem.graph.reset()
             if self.floor.edges[self.floor.edge]["dead"]:  # 들어선 가지는 이미 끝까지 가 봄: 걷는 쪽(다음 방위 기준 앞)은 가 본 끝
@@ -1292,6 +1298,54 @@ class Navigator:
         if lt and lt.get("t") is not None and lt["t"] >= self.clock:
             return lt
         return {"t": self.clock, **(self.sensor or {})}
+
+    # ---- 머릿속 지도: 웹 관찰자 화면과 시뮬레이터 재생 화면이 같은 기록을 그린다. 판단에는 안 씀
+    def mind_reset(self):
+        """구간(엘리베이터 하차)마다 새로. 좌표는 갈림길 그래프(core/floor_graph.py)의 걸음 수·방위 위치."""
+        self.mind_log = {"trail": [], "views": [], "plates": {}, "unread": []}
+        self.mind_now = {}
+
+    def mind_note(self, obs, heading):
+        """이 사진: 지금 위치, 카메라가 본 방향(시야), 문패를 읽은 자리, 문은 보이는데 번호를 못 읽은 자리."""
+        pos, log = self.floor.pos, self.mind_log
+        self.mind_now = {}
+        if pos is None or heading is None:
+            return
+        log["trail"].append(pos)
+        view = [pos[0], pos[1], heading]
+        log["views"].append(view)
+        spot = lambda p: (pos[0] + p["m"] * math.sin(math.radians(heading + MIND_SIDE.get(p["side"], 0))),
+                          pos[1] + p["m"] * math.cos(math.radians(heading + MIND_SIDE.get(p["side"], 0))))
+        plates = {p["n"]: spot(p) for p in obs.get("plates", []) if p.get("m")}
+        log["plates"].update(plates)
+        log["unread"] = [u for u in log["unread"] if all(math.dist(u, q) > MIND_SAME_M for q in plates.values())]  # 가까이 와서 읽음
+        unread = []
+        for p in obs.get("unread", []):
+            q = spot(p) if p.get("m") else None
+            if q and all(math.dist(q, o) > MIND_SAME_M for o in list(log["plates"].values()) + log["unread"]):
+                unread.append(q)
+                log["unread"].append(q)
+        self.mind_now = {"view": view, "plates": plates, "unread": unread}
+
+    def mind_map(self, full=False):
+        """그림용 머릿속 지도. full: 지금까지 쌓은 길·시야·문패·못 읽은 문 전부 (웹), 아니면 이 사진 것만 (시뮬레이터가 쌓음)."""
+        f, a = self.floor, self.arrival
+        spot = None
+        if a.mem and a.mem.get("spot") and f.pos is not None:  # 도착 추정은 자기 원점을 씀: 지금 위치 차이만큼 옮겨 같은 그림에
+            spot = (a.mem["spot"][0] - a.pos[0] + f.pos[0], a.mem["spot"][1] - a.pos[1] + f.pos[1])
+        d = self.st.get("dir_last") or {}
+        out = {"pos": f.pos, "head": (self.sensor or {}).get("heading"), "junc": [j["p"] for j in f.junctions],
+               "br": [[j, c, e] for (j, c), e in f.branch.items()], "edge": f.edge, "spot": spot,
+               "edges": [{"ends": sorted(e["ends"]), "dead": e["dead"], "nums": [min(e["nums"]), max(e["nums"])] if e["nums"] else None}
+                         for e in f.edges],
+               "dir": d.get("direction"), "p_ahead": d.get("p_ahead"), "target": self.target}
+        if full:
+            log = self.mind_log
+            out.update(trail=log["trail"][-MIND_KEEP:], views=log["views"][-MIND_KEEP:],
+                       plates=log["plates"], unread=log["unread"])
+        else:
+            out.update(self.mind_now)
+        return out
 
     def turned_since(self):
         """이 사진을 찍은 뒤 사용자가 돌았나 (사진 때 방위와 가장 최근 방위가 135° 넘게 다름)."""

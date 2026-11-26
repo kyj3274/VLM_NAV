@@ -97,6 +97,9 @@ def test_fake_route_to_arrival(tmp_path):
     assert "안내 기록" in html and "정면에 410호 문이 있습니다." in html
     m = c.get(f"/api/session/{sid}", headers=H).json()
     assert m["detail"]["arrived"] and "410" in m["detail"]["confirmed"]
+    mind = m["detail"]["mind"]  # 머릿속 지도: 센서(걸음 수·방위)가 오면 위치·본 방향이 쌓임
+    assert mind["pos"] is not None and mind["views"] and mind["views"][-1][2] == 90.0
+    assert "MindMap" in c.get("/mindmap.js").text and "/mindmap.js" in c.get("/monitor").text
     assert c.get(f"/api/session/{sid}/latest-frame?code={CODE}").status_code == 200
 
 

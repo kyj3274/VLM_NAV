@@ -170,6 +170,7 @@ def detail_of(ws: WebSession) -> dict:
         "update_interval_median": round(statistics.median(gaps), 2) if gaps else None,
         "latency_s": rec.get("latency_seconds"), "lag_s": rec.get("lag_s"),
         "credit": ws.credit, "segment": ws.nav.si,
+        "mind": ws.nav.mind_map(full=True),  # 머릿속 지도 (관찰자 화면이 web/mindmap.js로 그림, 판단에는 안 씀)
     }
 
 

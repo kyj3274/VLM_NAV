@@ -24,6 +24,7 @@ import lobby  # noqa: E402
 import world  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[2] / "outputs" / "sim" / "view_floor.html"
+MINDJS = Path(__file__).resolve().parents[1] / "nav" / "web" / "mindmap.js"  # 머릿속 지도 그리기 (웹 관찰자 화면과 같은 코드)
 CASES = [("number", 0.0, "번호"), ("name", 0.0, "이름만"), ("name", 1.0, "이름+표지판"), ("english", 1.0, "영어+표지판")]
 LOBBY_CASES = [("number", 0, "로비 번호"), ("english", 0, "로비 영어"), ("number", 3, "로비+가운데 장소"), ("english", 3, "로비+가운데 장소 영어")]
 
@@ -57,7 +58,8 @@ svg{width:100%;height:auto;display:block;max-height:70vh}.ctl{display:flex;gap:8
    <input id="slider" type="range" min="0" value="0"><select id="speed"><option value="1">1배</option><option value="3" selected>3배</option><option value="8">8배</option></select></div>
   <div class="legend"><span style="background:var(--target)"></span>목적지 <span style="background:var(--seen)"></span>이번 사진에 읽힌 문패
    <span style="background:var(--trail)"></span>지나온 길 <span style="background:var(--sign)"></span>표지판 있는 갈림길 <span style="background:var(--fov)"></span>카메라 시야
-   <br>머릿속: ● 갈림길 · 실선 가 본 가지 · 끝에 막대 = 끝까지 감 · 점선 = 안 가 본 가지 · ★ 목적지 추정 위치</div>
+   <br>머릿속: 진한 부채꼴 = 문패를 읽을 수 있는 거리에서 본 곳 · 옅은 부채꼴 = 보이기만 한 곳 · 파란 점 = 읽은 문패 · 주황 ? = 번호 못 읽은 문 (확인할 후보)
+   <br>● 갈림길 · 실선 가 본 가지 · 끝에 막대 = 끝까지 감 · 점선 = 안 가 본 가지 · ★ 목적지 추정 위치</div>
  </div>
  <div>
   <div class="card"><div class="row"><div><div class="k">시각</div><div class="big" id="t"></div></div>
@@ -69,6 +71,7 @@ svg{width:100%;height:auto;display:block;max-height:70vh}.ctl{display:flex;gap:8
   <div class="card" style="margin-top:12px"><div class="k">안내 기록 (누르면 그 시각으로)</div><div class="log" id="log"></div></div>
  </div>
 </main>
+<script>__MINDJS__</script>
 <script>
 const EPS = __DATA__;
 const $ = id => document.getElementById(id);
@@ -111,45 +114,15 @@ function draw() {
   $("slider").value = i;
   document.querySelectorAll("#log div").forEach(d => d.classList.toggle("cur", +d.dataset.i === lastSay(i)));
 }
-function drawMind(e, f) {
-  const m = f.mind, b = e.mbox, S = 14, P = 30;
-  const X = x => P + (x - b[0]) * S, Y = y => P + (b[3] - y) * S, V = c => [Math.sin(c * Math.PI / 180), Math.cos(c * Math.PI / 180)];
-  const Wd = (b[2] - b[0]) * S + 2 * P, Hd = (b[3] - b[1]) * S + 2 * P;
-  let s = `<svg viewBox="0 0 ${Wd} ${Hd}" xmlns="http://www.w3.org/2000/svg">`;
-  if (!m || !m.pos) {
-    $("mind").outerHTML = (s + `<text x="${Wd/2}" y="${Hd/2}" text-anchor="middle" fill="var(--mute)" font-size="14">걸음 수·방위가 아직 없음 (위치 모름)</text></svg>`).replace("<svg", '<svg id="mind"');
-    $("mcap").textContent = ""; return;
-  }
-  const tr = e.steps.slice(0, i + 1).filter(g => g.mind && g.mind.pos).map(g => `${X(g.mind.pos[0])},${Y(g.mind.pos[1])}`).join(" ");
-  s += `<polyline points="${tr}" fill="none" stroke="var(--trail)" stroke-width="2.5" stroke-opacity=".7" stroke-linejoin="round"/>`;
-  const labeled = new Set();
-  for (const [j, c, k] of m.br) {
-    const ed = m.edges[k], a = m.junc[j], v = V(c);
-    let q = null;  // 가지 방향에 있는 다른 끝 갈림길
-    for (const o of ed.ends) if (o !== j) { const d = [m.junc[o][0] - a[0], m.junc[o][1] - a[1]], dot = d[0]*v[0] + d[1]*v[1];
-      if (dot > 0 && (!q || dot > q[1])) q = [o, dot]; }
-    const here = !q && k === m.edge;  // 지금 걷는 가지: 갈림길에서 지금 위치까지
-    const end = q ? m.junc[q[0]] : here ? m.pos : [a[0] + v[0] * 5, a[1] + v[1] * 5];
-    const col = ed.dead ? "var(--mute)" : k === m.edge ? "var(--seen)" : "var(--ink)";
-    s += `<line x1="${X(a[0])}" y1="${Y(a[1])}" x2="${X(end[0])}" y2="${Y(end[1])}" stroke="${col}" stroke-width="3" stroke-opacity=".75"${!q && !here && !ed.dead ? ' stroke-dasharray="6 5"' : ""}/>`;
-    if (!q && ed.dead) s += `<line x1="${X(end[0]) - 6*v[1]}" y1="${Y(end[1]) - 6*v[0]}" x2="${X(end[0]) + 6*v[1]}" y2="${Y(end[1]) + 6*v[0]}" stroke="${col}" stroke-width="3"/>`;
-    if (!q && !here && !ed.dead) s += `<text x="${X(end[0])}" y="${Y(end[1]) - 6}" text-anchor="middle" font-size="10" fill="var(--mute)">안 가 봄</text>`;
-    if (ed.nums && !labeled.has(k)) { labeled.add(k);
-      s += `<text x="${(X(a[0]) + X(end[0]))/2 + 6}" y="${(Y(a[1]) + Y(end[1]))/2 + 14}" font-size="10" fill="var(--mute)">${ed.nums[0]}~${ed.nums[1]}</text>`; }
-  }
-  m.junc.forEach((p, k) => { s += `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="6" fill="var(--sign)"/><text x="${X(p[0]) + 9}" y="${Y(p[1]) + 4}" font-size="10" fill="var(--sign)">${k}</text>`; });
-  if (m.spot) s += `<text x="${X(m.spot[0])}" y="${Y(m.spot[1]) + 6}" text-anchor="middle" font-size="18" fill="var(--target)">★</text>`;
-  if (m.head !== null && m.head !== undefined) {
-    const u = m.head * Math.PI / 180, tri = [[0, 11], [-7, -7], [7, -7]].map(([dx, fw]) =>
-      `${X(m.pos[0]) + fw*Math.sin(u) + dx*Math.cos(u)},${Y(m.pos[1]) - fw*Math.cos(u) + dx*Math.sin(u)}`).join(" ");
-    s += `<polygon points="${tri}" fill="var(--user)"/>`;
-  } else s += `<circle cx="${X(m.pos[0])}" cy="${Y(m.pos[1])}" r="6" fill="var(--user)"/>`;
-  $("mind").outerHTML = (s + "</svg>").replace("<svg", '<svg id="mind"');
-  $("mcap").textContent = m.dir ? `· 목적지 방향: ${m.dir}${m.p_ahead != null ? ` (앞일 확률 ${m.p_ahead})` : ""}` : "";
+function drawMind(e, f) {  // 그리기는 웹 관찰자 화면과 같은 src/nav/web/mindmap.js
+  const m = MindMap.accumulate(e.steps.map(g => g.mind), i);
+  $("mind").outerHTML = MindMap.svg(m, {box: e.mbox, id: "mind", readM: e.range, seeM: e.see});
+  const c = MindMap.caption(m); $("mcap").textContent = c ? "· " + c : "";
 }
 function lastSay(k) { const st = EPS[ep].steps; for (let j = k; j >= 0; j--) if (st[j].say.length) return j; return -1; }
 function load(k) {
   ep = k; i = 0; const e = EPS[ep], r = e.result;
+  if (!e.mbox) e.mbox = MindMap.box(MindMap.accumulate(e.steps.map(g => g.mind), e.steps.length - 1), 4, e.see);  // 재생 중 흔들리지 않게 끝까지 본 범위
   $("slider").max = e.steps.length - 1;
   $("res").textContent = r.success ? `성공 (${r.end})` : `실패 (${r.end})`; $("res").className = "res " + (r.success ? "ok" : "bad");
   $("info").textContent = `${r.t}초 · 걸은 거리 ${r.walked}m / 최단 ${r.shortest}m · SPL ${r.spl.toFixed(2)} · 끝에서 돎 ${r.end_turns}`;
@@ -169,16 +142,6 @@ document.onkeydown = e => { if (e.key === "ArrowRight") $("next").click(); if (e
 load(0);
 </script></body></html>
 """
-
-
-def mind_box(steps):
-    """머릿속 지도 그림 범위: 실행 내내 믿은 위치·갈림길·목적지 점을 모두 담음 (재생 중 화면이 흔들리지 않게)."""
-    pts = [(0.0, 0.0)]
-    for f in steps:
-        m = f.get("mind") or {}
-        pts += ([m["pos"]] if m.get("pos") else []) + list(m.get("junc", [])) + ([m["spot"]] if m.get("spot") else [])
-    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-    return (min(xs) - 6, min(ys) - 6, max(xs) + 6, max(ys) + 6)
 
 
 def pack(tr, res, case):
@@ -209,7 +172,7 @@ def pack(tr, res, case):
     pad = half + 2
     return {"case": case, "kind": m["kind"], "seed": m["seed"], "target": m["target"], "mode": fl["mode"],
             "width": world.WIDTH, "range": world.RANGE, "box": (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad),
-            "cors": cors, "rooms": [], "doors": doors, "signs": signs, "steps": out, "result": res, "mbox": mind_box(out)}
+            "cors": cors, "rooms": [], "doors": doors, "signs": signs, "steps": out, "result": res, "see": world.SEE_M}
 
 
 def pack_lobby(tr, res, case):
@@ -223,7 +186,7 @@ def pack_lobby(tr, res, case):
     return {"case": case, "kind": m["kind"], "seed": m["seed"], "target": m["target"], "mode": lb["mode"],
             "width": world.WIDTH, "range": world.RANGE, "box": (-2.5, -2.5, lb["W"] + 2.5, lb["H"] + 2.5),
             "cors": [], "rooms": [(0, 0, lb["W"], lb["H"])], "blocks": lb.get("blocks", []), "doors": doors, "signs": [], "steps": steps,
-            "result": res, "mbox": mind_box(steps)}
+            "result": res, "see": world.SEE_M}
 
 
 def main():
@@ -250,7 +213,8 @@ def main():
                 eps.append(pack_lobby(tr, res, case))
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(PAGE.replace("__DATA__", json.dumps(eps, ensure_ascii=False)), encoding="utf-8")
+    out.write_text(PAGE.replace("__MINDJS__", MINDJS.read_text(encoding="utf-8")).replace("__DATA__", json.dumps(eps, ensure_ascii=False)),
+                   encoding="utf-8")
     print(f"{out} ({len(eps)}개 실행, 성공 {sum(e['result']['success'] for e in eps)})")
     if not a.no_open:
         subprocess.run(["open", str(out)])

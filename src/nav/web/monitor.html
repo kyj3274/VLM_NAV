@@ -22,6 +22,8 @@ img { width:100%; border-radius:10px; background:#000; min-height:200px; object-
 .muted { color:var(--muted); }
 ul { margin:0; padding-left:18px; }
 a { color:var(--accent); }
+.mind svg { width:100%; height:auto; max-height:60vh; display:block; color:var(--fg); }
+.legend { font-size:12px; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -48,10 +50,15 @@ a { color:var(--accent); }
       <div><span class="k">오늘 크레딧</span><span id="daily">-</span></div>
       <div><span class="k">상태</span><span id="run">-</span></div>
     </div>
+    <div class="card"><div class="k">머릿속 지도 <span id="mcap" class="muted"></span></div><div id="mind" class="mind"></div>
+      <div class="muted legend">진한 부채꼴: 문패를 읽을 수 있는 거리(5m)에서 본 곳 · 옅은 부채꼴: 보이기만 한 곳(10m) · 보라 선: 걸은 길 ·
+        파란 점: 읽은 문패 · 주황 ?: 번호를 못 읽은 문(확인할 후보) · ★: 목적지 추정 위치 · ● 갈림길 · 삼각형: 지금 위치와 방향<br>
+        걸음 수·방위로 그린 것이라 휴대폰 센서(동작 및 방향 접근)가 켜져 있어야 보입니다.</div></div>
     <div class="card"><div class="k">Claude가 본 것</div><div id="seen">-</div></div>
     <div class="card"><div class="k">최근 기록</div><ul id="events"></ul></div>
   </div>
 </div>
+<script src="/mindmap.js"></script>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
@@ -95,6 +102,7 @@ async function tick() {
     $('seen').innerHTML = `장소 ${esc(d.place)} · 층 표시 ${esc(d.floor_sign || '-')} · ${d.elevator ? '엘리베이터 ' + esc(d.elevator.side) : '엘리베이터 없음'}<br>` +
       `문패: ${esc(pl.join(' / ') || '없음')}<br>재확인: ${d.recheck ? esc(`${d.recheck.asked} → ${d.recheck.read || '못 읽음'} (${d.recheck.why})`) : '-'}`;
     $('events').innerHTML = (d.events || []).slice().reverse().map((e) => `<li>${esc(e)}</li>`).join('');
+    if (d.mind) { $('mind').innerHTML = MindMap.svg(d.mind); $('mcap').textContent = MindMap.caption(d.mind); }
     if (s.frame_seq !== lastSeq) {
       lastSeq = s.frame_seq;
       $('frame').src = `/api/session/${sel.value}/latest-frame?code=${encodeURIComponent(code)}&t=${Date.now()}`;
