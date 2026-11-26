@@ -53,12 +53,16 @@ JUNC_SAY = 3.0    # 갈림길이 이 거리(m) 안에 보이면 어느 복도로
 JUNC_NEAR = 1.0   # 이보다 가까우면 말하지 않음 (갈림길에서 막 돌아선 때: 이미 고른 뒤)
 SCAN_M = 12.0      # 넓은 곳(로비)에서 목적지를 못 보고 이만큼 걸을 때마다 제자리에서 한 바퀴 둘러보게 함 (시뮬레이터 로비 섬)
 SCAN_SHOTS = 8    # 한 바퀴에 받는 사진 수 (45°씩)
+SCAN_HALF = 5     # 뒤쪽을 이미 사진으로 봤으면 앞쪽 반(왼쪽 90° → 오른쪽 90°)만, 45°씩 (카메라 가로 시야 약 60°)
+SCAN_BACK = (3.0, 6.0)  # 뒤쪽(뒤·뒤 양옆 45°)의 이 거리 점들이 모두 지난 사진 시야 안이면 '뒤쪽은 봄'
+SEEN_M = 8.0      # 지난 사진이 이 거리 안·시야각(30°) 안에 둔 곳을 본 곳으로 봄 (문패를 읽는 거리 5m보다 조금 넓게, 가정)
 MIND_SIDE = {"L": -20, "R": 20}  # 머릿속 지도: 화면 왼쪽·오른쪽에 보인 것은 카메라 방향에서 대략 이만큼 (core/arrival.py와 같음)
 MIND_SAME_M = 2.5  # 못 읽은 문이 찍은 문패·못 읽은 문과 이 거리 안이면 같은 것으로 봄 (그림만. 거리·쪽이 눈대중이라 넉넉히)
 MIND_KEEP = 600    # 웹에 보낼 길·시야 기록 수 (최근 것)
 GIVE_UP_M = 40.0  # 넓은 곳에서 가 본 곳만 이만큼 다니면(새 곳 없음) 못 찾았다고 알림 (더 알 것이 없음 = 안전한 실패)
 VISIT_M = 4.0     # 가 본 자리에서 이보다 멀면 새 곳 (벽 문패는 5m 안에서 읽힘)
 SCAN_SAY = "넓은 곳입니다. 제자리에서 휴대폰을 앞으로 들고 천천히 한 바퀴 돌아 주세요."
+SCAN_HALF_SAY = "넓은 곳입니다. 제자리에 서서 휴대폰을 왼쪽 옆에서 오른쪽 옆까지 천천히 비춰 주세요."
 CLOCK_OFF = {"L": -20, "C": 0, "R": 20}  # 화면 왼쪽·가운데·오른쪽 → 카메라 방향에서 대략 몇 도
 GRAPH_LEAN = 0.6  # 둘러보는 동안 복도 그래프 P(앞)이 이 이상(또는 1-이 이하)이면 약한 방향 근거 (2026-11-24 병합, docs/17 21절)
 PASS_WALK_M = 1.5  # 옆을 비추라고 한 뒤 이만큼 걸었으면(걸음 수) 그 뒤 읽은 다른 문패를 '지나친' 근거로 씀 (멈춰 비추는 중에 읽은 옆 문패는 아님)
@@ -193,7 +197,7 @@ class Navigator:
                    "floor_temp": False, "floor_src": None, "ask_t": None, "check_t": None, "el_disp": None,
                    "door_out": False, "elev_run": 0, "elev_in": False, "hall_run": 0, "exit_cand": None,
                    "scan": None, "dir": None, "dir_said": None, "dir_rooms": [], "turn_said_t": -99, "dir_last": None,
-                   "lscan": 0, "scan_steps": None, "scan_hit": None, "scan_spots": [], "visited": [], "new_steps": None, "gave_up": False}
+                   "lscan": 0, "scan_steps": None, "scan_hit": None, "scan_h": None, "scan_spots": [], "visited": [], "new_steps": None, "gave_up": False}
         self.records, self.clock, self.n = [], 0, 0  # n: 전체 걸음 번호 (연속 판단은 '바로 앞 걸음'으로, 2026-11-18)
         self.seg_n = 0
         self.mem = nav_memory.Memory(target)
@@ -1299,7 +1303,7 @@ class Navigator:
             return lt
         return {"t": self.clock, **(self.sensor or {})}
 
-    # ---- 머릿속 지도: 웹 관찰자 화면과 시뮬레이터 재생 화면이 같은 기록을 그린다. 판단에는 안 씀
+    # ---- 머릿속 지도: 웹 관찰자 화면과 시뮬레이터 재생 화면이 같은 기록을 그린다. 판단에는 로비 둘러보기 범위(seen_all)만 씀
     def mind_reset(self):
         """구간(엘리베이터 하차)마다 새로. 좌표는 갈림길 그래프(core/floor_graph.py)의 걸음 수·방위 위치."""
         self.mind_log = {"trail": [], "views": [], "plates": {}, "unread": []}
@@ -1394,7 +1398,7 @@ class Navigator:
                 st["act"] = "직진"
                 return ["주변에서 목적지가 보이지 않습니다. 계속 앞으로 천천히 가세요."]
             self.arrival.cancel()  # 도는 동안의 방위로 적힌 위치는 버림 (본 쪽은 아래 시계 방향으로 알려 줌)
-            h1 = self.fresh().get("heading")
+            h1 = st["scan_h"]  # 둘러보기를 시작할 때 몸이 향한 쪽 기준 (반 바퀴는 휴대폰이 오른쪽 옆에서 끝남)
             k = round(((hit["bearing"] - (h1 or 0)) % 360) / 30) % 12 or 12
             st["act"] = "목적지 접근"
             label = f"{target}{'호' if ROOM.match(target) else ''}"
@@ -1414,13 +1418,26 @@ class Navigator:
                 or self.arrival.mem is not None or self.arrival.asking() or steps is None or st["gave_up"]
                 or (st["scan_steps"] is not None and (steps - st["scan_steps"]) * STEP_M < SCAN_M)):
             return []
+        h = (self.sensor or {}).get("heading")
+        half = pos is not None and h is not None and self.seen_all(
+            [(pos[0] + r * math.sin(math.radians(h + a)), pos[1] + r * math.cos(math.radians(h + a))) for a in (135, 180, 225) for r in SCAN_BACK])
         st["scan_steps"] = steps
         if pos is not None and any(math.dist(pos, q) < SCAN_M / 2 for q in st["scan_spots"]):
             return []  # 이미 둘러본 자리 근처: 다시 돌지 않음 (반경은 간격의 절반: 간판은 한 면에만 있어 다른 쪽에서 보면 보임)
         if pos is not None:
             st["scan_spots"].append(pos)
-        st.update(lscan=SCAN_SHOTS, scan_hit=None, act="둘러보기")
-        return [SCAN_SAY]
+        st.update(lscan=SCAN_HALF if half else SCAN_SHOTS, scan_hit=None, act="둘러보기", scan_h=h)
+        return [SCAN_HALF_SAY if half else SCAN_SAY]
+
+    def seen_all(self, pts):
+        """점들이 모두 지난 사진의 시야(머릿속 지도 기록) 안에 들어온 적이 있는가."""
+        def seen(q):
+            for x, y, hv in self.mind_log["views"]:
+                d = math.dist((x, y), q)
+                if 0 < d <= SEEN_M and abs((math.degrees(math.atan2(q[0] - x, q[1] - y)) - hv + 180) % 360 - 180) <= 30:
+                    return True
+            return False
+        return all(seen(q) for q in pts)
 
     def direction_say(self, target, note, seen_now=False):
         """복도 그래프의 방향 판단을 안내 문장으로. 판단이 바뀌거나 새 문패가 근거에 들어올 때만 말한다.

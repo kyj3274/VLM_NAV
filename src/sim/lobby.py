@@ -189,6 +189,9 @@ class LobbyWalker:
         if "한 바퀴" in text:  # 제자리에서 휴대폰을 들고 한 바퀴 (왼쪽으로 45°씩, 마지막 사진은 처음 방향)
             self.sweep = list(range(45, 360, 45))
             return
+        if "왼쪽 옆에서 오른쪽 옆까지" in text:  # 앞쪽 반: 왼쪽 90°에서 오른쪽 90°까지 45°씩 (yaw 왼쪽 +)
+            self.sweep = list(range(90, -91, -45))
+            return
         clock = re.search(r"(\d+)시 방향", text)
         if clock and "비춰" not in text:  # 'N시 방향 약 M미터': 그쪽으로 몸을 돌림 (넓은 곳에서는 정면이 아닐 수 있음)
             self.b = (self.b + (int(clock.group(1)) % 12) * 30) % 360

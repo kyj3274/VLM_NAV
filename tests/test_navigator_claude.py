@@ -1210,3 +1210,15 @@ def test_quiet_sentence_waiting_and_inside_elevator():
     nav.st["last_say"] = nav.clock - 20
     r = nav.step(["f.jpg"])
     assert r["say"] == ["엘리베이터 안입니다. 4층에 도착하면 내리세요."]
+
+
+def test_lobby_scan_half_only_when_back_was_seen():
+    """로비 둘러보기: 뒤쪽이 지난 사진 시야 안에 있었으면 앞쪽 반(5장)만, 꺾은 뒤처럼 뒤쪽을 본 적 없으면 한 바퀴.
+    (2026-11-26 시뮬레이터 로비 24m 섬3 #9: 북쪽으로 걷다 동쪽으로 꺾은 뒤 '걸어왔으니 뒤는 봄'으로 반만 봐 서쪽 서점을 놓침)"""
+    nav = nv.Navigator(ScriptRunner([]), "314")
+    nav.mind_log["views"] = ([(0.0, -6.0, float(h)) for h in range(0, 360, 45)]  # (0,-6)에서 한 바퀴 둘러봄
+                             + [(0.0, y, 0.0) for y in (-4.5, -3.0, -1.5)])  # 북쪽을 보며 (0,0)까지 걸어옴
+    back = lambda h: [(r * nv.math.sin(nv.math.radians(h + a)), r * nv.math.cos(nv.math.radians(h + a)))
+                      for a in (135, 180, 225) for r in nv.SCAN_BACK]
+    assert nav.seen_all(back(0.0))       # 계속 북쪽: 뒤(남쪽)는 걸어오며 봄
+    assert not nav.seen_all(back(90.0))  # 동쪽으로 꺾음: 뒤(서쪽)는 본 적 없음
