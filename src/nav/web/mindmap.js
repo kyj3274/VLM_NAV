@@ -14,8 +14,13 @@ const MindMap = (() => {
     const pts = [[0, 0]].concat(m.trail || [], m.junc || [], Object.values(m.plates || {}), m.unread || [],
       m.spot ? [m.spot] : [], m.pos ? [m.pos] : []);
     for (const v of m.views || []) { const [dx, dy] = V(v[2]); pts.push([v[0] + dx * seeM * 0.6, v[1] + dy * seeM * 0.6]); }
-    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-    return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);  // 처음 몇 m만 걸었을 때 크게 늘어나 보이지 않게 최소 가로 24m·세로 16m
+    const b = [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
+    for (const [lo, hi, min] of [[0, 2, 24], [1, 3, 16]]) {
+      const grow = Math.max(0, min - (b[hi] - b[lo])) / 2;
+      b[lo] -= grow; b[hi] += grow;
+    }
+    return b;
   }
 
   function svg(m, opt = {}) {
