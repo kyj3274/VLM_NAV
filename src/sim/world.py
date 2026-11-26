@@ -87,19 +87,26 @@ def _wrap(a):
     return (a + 180) % 360 - 180
 
 
+def ray(corr, x, deg, cap=20.0):
+    """x에서 deg(복도 축 기준, 왼쪽 +) 방향으로 벽·복도 끝까지 거리."""
+    a = math.radians(deg)
+    dx, dy = math.cos(a), math.sin(a)
+    ts = [cap]
+    if dy:
+        ts.append((WIDTH / 2 if dy > 0 else -WIDTH / 2) / dy)
+    if dx:
+        ts.append(((corr["length"] if dx > 0 else 0.0) - x) / dx)
+    return min(t for t in ts if t > 0)
+
+
 def far_m(corr, x, cam, cap=20.0):
     """깊이 모델의 far_m 흉내: 시야 안 광선들이 벽·복도 끝에 닿는 거리 중 가장 먼 것."""
-    best = 0.0
-    for k in range(int(FOV) + 1):
-        a = math.radians(cam - FOV / 2 + k)
-        dx, dy = math.cos(a), math.sin(a)
-        ts = [cap]
-        if dy:
-            ts.append((WIDTH / 2 if dy > 0 else -WIDTH / 2) / dy)
-        if dx:
-            ts.append(((corr["length"] if dx > 0 else 0.0) - x) / dx)
-        best = max(best, min(t for t in ts if t > 0))
-    return round(best, 1)
+    return round(max(ray(corr, x, cam - FOV / 2 + k, cap) for k in range(int(FOV) + 1)), 1)
+
+
+def depth_cols(corr, x, cam, n=7):
+    """깊이 모델의 cols 흉내: 화면 왼쪽→오른쪽 n칸 가운데 광선의 거리 (core/depth.py COLS)."""
+    return [round(ray(corr, x, cam + FOV / 2 - FOV * (i + 0.5) / n), 1) for i in range(n)]
 
 
 def misreading(n, rng):
@@ -164,7 +171,8 @@ def observe(corr, x, heading, yaw=0.0, all_plates=False):
                        "box": [round(cx - 3), 30, round(cx + 3), 36],
                        "wall": "?" if yaw else ("왼쪽" if left else "오른쪽"), "dm": round(dist, 2)})
     plates.sort(key=lambda p: p["m"])
-    return {"plates": plates if all_plates else plates[:MAX_PLATES], "depth": {"far_m": far_m(corr, x, cam), "far_x": 0.5},
+    return {"plates": plates if all_plates else plates[:MAX_PLATES],
+            "depth": {"far_m": far_m(corr, x, cam), "far_x": 0.5, "cols": depth_cols(corr, x, cam)},
             "unread": unread, "floor_sign": "", "floor": None, "place": "corridor",
             "stair_sign": "", "stair_floors": [], "door_ahead": "none",
             "elev": {"seen": False, "cand": False, "why": "none", "side": "none", "m": None, "btn": "none"},

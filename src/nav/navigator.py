@@ -1316,7 +1316,7 @@ class Navigator:
         if pos is None or heading is None:
             return
         log["trail"].append(pos)
-        view = [pos[0], pos[1], heading]
+        view = [pos[0], pos[1], heading, (obs.get("depth") or {}).get("cols")]  # 깊이가 있으면 칸별 막힌 거리까지만 본 곳
         log["views"].append(view)
         spot = lambda p: (pos[0] + p["m"] * math.sin(math.radians(heading + MIND_SIDE.get(p["side"], 0))),
                           pos[1] + p["m"] * math.cos(math.radians(heading + MIND_SIDE.get(p["side"], 0))))
@@ -1432,7 +1432,7 @@ class Navigator:
     def seen_all(self, pts):
         """점들이 모두 지난 사진의 시야(머릿속 지도 기록) 안에 들어온 적이 있는가."""
         def seen(q):
-            for x, y, hv in self.mind_log["views"]:
+            for x, y, hv, *_ in self.mind_log["views"]:  # 깊이로 자르지 않음: 벽 너머(건물 밖)는 볼 수 없어 늘 '안 봄'이 됨
                 d = math.dist((x, y), q)
                 if 0 < d <= SEEN_M and abs((math.degrees(math.atan2(q[0] - x, q[1] - y)) - hv + 180) % 360 - 180) <= 30:
                     return True

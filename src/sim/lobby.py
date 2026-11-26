@@ -132,7 +132,8 @@ def observe(lb, w, target):
     cam, plates, hit, unread = (w.b - w.yaw) % 360, [], None, []
     cols = [(wall_dist(lb, w.p, (cam + a) % 360), 0.5 + a / world.FOV) for a in range(-30, 31, 2)]  # 오른쪽(+방위)이 화면 오른쪽
     far_m, far_x = max(cols)
-    info = {"far_m": round(far_m, 1), "far_x": round(far_x, 3)}
+    info = {"far_m": round(far_m, 1), "far_x": round(far_x, 3),
+            "cols": [round(wall_dist(lb, w.p, (cam + world.FOV * ((i + 0.5) / 7 - 0.5)) % 360), 1) for i in range(7)]}
     for d in lb["doors"]:
         dist = math.dist(w.p, d["p"])
         brg = bearing(w.p, d["p"])

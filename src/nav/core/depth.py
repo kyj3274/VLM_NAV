@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
+COLS = 7          # 화면을 가로로 이만큼 나눠 칸마다 벽·막힌 곳까지 거리 (머릿속 지도에서 본 곳을 그 거리까지만)
 SIDE_GAP = 0.08   # 문패가 복도 방향(가장 먼 열)에서 화면 너비의 이만큼 안이면 복도 끝 벽일 수 있어 벽 쪽을 정하지 않음
 CORRIDOR_M = 3.0  # 가장 먼 곳이 이보다 가까우면 복도가 안 보이는 사진(벽·문을 마주봄)으로 보고 벽 쪽을 정하지 않음
 HF_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
@@ -39,13 +40,14 @@ def load():
 
 
 def measure(model, img):
-    """{"far_x": 복도 방향(0~1), "far_m": 그 거리, "ahead_m": 정면 거리}, 깊이 지도"""
+    """{"far_x": 복도 방향(0~1), "far_m": 그 거리, "ahead_m": 정면 거리, "cols": 화면 왼쪽→오른쪽 칸별 거리}, 깊이 지도"""
     dep = model(img)["predicted_depth"].squeeze().float().cpu().numpy()
     h, w = dep.shape
     col = np.convolve(np.median(dep[int(0.30 * h):int(0.60 * h)], axis=0), np.ones(9) / 9, mode="same")
     ahead = dep[int(0.45 * h):int(0.55 * h), int(0.45 * w):int(0.55 * w)]
     return {"far_x": round(int(np.argmax(col)) / w, 3), "far_m": round(float(col.max()), 1),
-            "ahead_m": round(float(np.median(ahead)), 1)}, dep
+            "ahead_m": round(float(np.median(ahead)), 1),
+            "cols": [round(float(np.median(c)), 1) for c in np.array_split(col, COLS)]}, dep
 
 
 def box_distance(dep, box):

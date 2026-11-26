@@ -32,9 +32,13 @@ const MindMap = (() => {
     if (!m || !m.pos) {
       return s + `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="${C.mute}" font-size="14">걸음 수·방위가 아직 없음 (위치 모름)</text></svg>`;
     }
-    const wedge = (v, r) => {
-      const [x, y, h] = v, pts = [];
-      for (let a = -fov / 2; a <= fov / 2; a += 10) { const [dx, dy] = V(h + a); pts.push(`${X(x + dx * r)},${Y(y + dy * r)}`); }
+    const wedge = (v, r) => {  // 깊이 칸별 거리(v[3], 화면 왼쪽→오른쪽)가 있으면 벽·막힌 곳에서 자름
+      const [x, y, h, cols] = v, pts = [];
+      for (let a = -fov / 2; a <= fov / 2; a += 5) {
+        const k = cols ? Math.min(cols.length - 1, Math.floor((a + fov / 2) / fov * cols.length)) : 0;
+        const rr = cols ? Math.min(r, cols[k]) : r, [dx, dy] = V(h + a);
+        pts.push(`${X(x + dx * rr)},${Y(y + dy * rr)}`);
+      }
       return `<polygon points="${X(x)},${Y(y)} ${pts.join(' ')}"/>`;
     };
     const views = m.views || [];
